@@ -183,7 +183,8 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
         src_ip = None
     if dst_ip and not _looks_like_ip(dst_ip):
         dst_ip = None
-    if user and (user == "N/A" or len(user) > 30 or ":" in user):
+    if user and (user == "N/A" or len(user) > 30 or ":" in user
+                 or _looks_like_uuid(user)):
         user = None  # UUID/MAC/N/A → None
 
     if not process:
@@ -578,6 +579,18 @@ def _to_int(value, default=0):
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Detect UUID format: 8-4-4-4-12 hex digits with hyphens."""
+    if not s or "-" not in s or len(s) < 20:
+        return False
+    parts = s.split("-")
+    # UUID v4: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    return len(parts) >= 4 and all(
+        all(c.lower() in "0123456789abcdef" for c in p)
+        for p in parts[:5]
+    )
 
 
 def _looks_like_ip(s: str) -> bool:
