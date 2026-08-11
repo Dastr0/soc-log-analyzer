@@ -29,20 +29,16 @@ def generate_sample(output_path: str) -> None:
 
     for i in range(15):
         t = base_time + timedelta(
-            seconds=i * (168 if i < 10 else 45)  # intens di awal, melambat di akhir
+            seconds=i * (168 if i < 10 else 45)
         )
         events.append({
             "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
             "rule": {
                 "id": "5710" if i < 10 else "5712",
-                "level": 5 if i < 8 else 10,  # meningkat seiring waktu → escalation
+                "level": 5 if i < 8 else 10,
                 "description": "sshd: brute force attack" if i < 10
                 else "sshd: multiple authentication failures",
-                "mitre": {
-                    "id": ["T1110"],
-                    "tactic": ["Credential Access"],
-                    "technique": ["Brute Force"]
-                },
+                "mitre": {"id": ["T1110"], "tactic": ["Credential Access"], "technique": ["Brute Force"]},
                 "firedtimes": i + 1,
                 "groups": ["syslog", "sshd", "authentication_failed"],
             },
@@ -107,7 +103,7 @@ def generate_sample(output_path: str) -> None:
             "user_agent": "Nessus v10.5.0",
         })
 
-    # ── Skenario 3: Suspicious encoded PowerShell (3 event, 1 jam) ──
+    # ── Skenario 3: Suspicious encoded PowerShell (3 event) ───────
     ps_start = base_time + timedelta(hours=4, minutes=42)
     ps_host = "SRV-FILE01"
     ps_ip = "10.0.2.33"
@@ -140,14 +136,12 @@ def generate_sample(output_path: str) -> None:
             "data": {
                 "srcip": ps_ip,
                 "srcuser": ps_user,
-                "command": (
-                    "powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAG..."
-                ),
+                "command": "powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAG...",
             },
             "location": "Windows EventLog",
         })
 
-    # ── Event noise / normal (3 event) ─────────────────────────────
+    # ── Event noise / normal (3 event) ────────────────────────────
     for i in range(3):
         t = base_time + timedelta(hours=2 + i)
         events.append({
@@ -191,3 +185,168 @@ def generate_sample(output_path: str) -> None:
     print(f"  Total: {len(events)} events")
     print(f"  Insiden: 1 BRUTE_FORCE (15 event) + 1 PORT_SCAN/FP (8 event) "
           f"+ 1 SUSPICIOUS_PROC (3 event) + 3 noise")
+
+
+def generate_sample_fortigate(output_path: str) -> None:
+    """Generate sample FortiGate syslog buat testing."""
+    events = []
+    base = datetime(2026, 8, 10, 4, 23, 0)
+
+    # Scenario: brute force RDP yang KEDETEK di FortiGate (12 event deny/block)
+    for i in range(12):
+        t = base + timedelta(seconds=i * 45)
+        events.append(
+            f"date={t.strftime('%Y-%m-%d')} time={t.strftime('%H:%M:%S')} "
+            f"devname=FG-01 logid=0000000013 type=traffic subtype=forward "
+            f"level=notice vd=root srcip=203.0.113.5 srcport={56000 + i} "
+            f'srcintf="wan1" dstip=10.0.0.5 dstport=3389 dstintf="lan" '
+            f"proto=6 service=RDP action=deny policyid=99 "
+            f"duration=0 sentbyte=0 rcvdbyte=0 sentpkt=0 rcvdpkt=0"
+        )
+
+    # Normal traffic outbound (3 event)
+    for i in range(3):
+        t = base + timedelta(hours=2 + i)
+        events.append(
+            f"date={t.strftime('%Y-%m-%d')} time={t.strftime('%H:%M:%S')} "
+            f"devname=FG-01 logid=0000000013 type=traffic subtype=forward "
+            f"level=notice vd=root srcip=10.0.2.10 srcport={45000 + i} "
+            f'srcintf="lan" dstip=142.250.80.46 dstport=443 dstintf="wan1" '
+            f"proto=6 service=HTTPS action=accept policyid=3 "
+            f"duration=120 sentbyte=2048 rcvdbyte=15000 sentpkt=10 rcvdpkt=15"
+        )
+
+    # Blocked SSH attempt (2 event)
+    for i in range(2):
+        t = base + timedelta(hours=5, seconds=i * 10)
+        events.append(
+            f"date={t.strftime('%Y-%m-%d')} time={t.strftime('%H:%M:%S')} "
+            f"devname=FG-01 logid=0000000013 type=traffic subtype=forward "
+            f"level=notice vd=root srcip=198.51.100.50 srcport={60000 + i} "
+            f'srcintf="wan1" dstip=10.0.0.10 dstport=22 dstintf="lan" '
+            f"proto=6 service=SSH action=deny policyid=50 "
+            f"duration=0 sentbyte=0 rcvdbyte=0 sentpkt=0 rcvdpkt=0"
+        )
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        for line in events:
+            f.write(line + "\n")
+
+    print(f"  Total: {len(events)} FortiGate events")
+    print(f"  Insiden: 12 RDP brute force (blocked) + 2 SSH block + 3 normal")
+
+
+def generate_sample_windows(output_path: str) -> None:
+    """Generate sample Windows EventLog (Wazuh format) buat testing."""
+    events = []
+    base = datetime(2026, 8, 10, 8, 30, 0)
+
+    # Scenario 1: Login failure bertubi-tubi dari IP eksternal (8 event)
+    for i in range(8):
+        t = base + timedelta(seconds=i * 12)
+        events.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+            "rule": {
+                "id": "60122",
+                "level": 5,
+                "description": "Windows logon failure (EventID 4625)",
+                "mitre": {"id": ["T1110"], "tactic": ["Credential Access"], "technique": ["Brute Force"]},
+                "firedtimes": i + 1,
+                "groups": ["windows", "authentication_failed"],
+            },
+            "agent": {"id": "007", "name": "SRV-WEB01", "ip": "10.0.1.20"},
+            "manager": {"name": "wazuh-manager"},
+            "id": f"1723300000.00{i:06d}",
+            "full_log": (
+                f"EventID: 4625 | Account: svc_admin | "
+                f"LogonType: 10 (RemoteInteractive) | "
+                f"Source: 203.0.113.5 | Workstation: —"
+            ),
+            "predecoder": {
+                "program_name": "windows_event",
+                "hostname": "SRV-WEB01",
+            },
+            "decoder": {"name": "windows"},
+            "data": {
+                "srcip": "203.0.113.5",
+                "dstuser": "svc_admin",
+                "id": "4625",
+                "logon_type": "10",
+            },
+            "location": "Security",
+        })
+
+    # Scenario 2: User account created — suspicious (2 event)
+    for i in range(2):
+        t = base + timedelta(minutes=5 + i)
+        events.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+            "rule": {
+                "id": "60204",
+                "level": 6,
+                "description": "Windows: A user account was created (EventID 4720)",
+                "mitre": {"id": ["T1136"], "tactic": ["Persistence"], "technique": ["Create Account"]},
+                "firedtimes": 1,
+                "groups": ["windows", "account_management"],
+            },
+            "agent": {"id": "007", "name": "SRV-WEB01", "ip": "10.0.1.20"},
+            "manager": {"name": "wazuh-manager"},
+            "id": f"1723301000.00{i:06d}",
+            "full_log": (
+                f"EventID: 4720 | New Account: sql_helper | "
+                f"Created by: svc_admin | Domain: CORP"
+            ),
+            "predecoder": {
+                "program_name": "windows_event",
+                "hostname": "SRV-WEB01",
+            },
+            "decoder": {"name": "windows"},
+            "data": {
+                "dstuser": "sql_helper",
+                "srcuser": "svc_admin",
+                "id": "4720",
+            },
+            "location": "Security",
+        })
+
+    # Scenario 3: Normal logon from internal IP (2 event) — noise
+    for i in range(2):
+        t = base + timedelta(hours=1 + i)
+        events.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+            "rule": {
+                "id": "60106",
+                "level": 3,
+                "description": "Windows logon success (EventID 4624)",
+                "mitre": {},
+                "firedtimes": 1,
+                "groups": ["windows", "authentication_success"],
+            },
+            "agent": {"id": "008", "name": "DESKTOP-USER1", "ip": "10.0.3.45"},
+            "manager": {"name": "wazuh-manager"},
+            "id": f"1723302000.00{i:06d}",
+            "full_log": (
+                f"EventID: 4624 | Account: johndoe | "
+                f"LogonType: 7 (Unlock) | Source: —"
+            ),
+            "predecoder": {
+                "program_name": "windows_event",
+                "hostname": "DESKTOP-USER1",
+            },
+            "decoder": {"name": "windows"},
+            "data": {
+                "dstuser": "johndoe",
+                "id": "4624",
+                "logon_type": "7",
+            },
+            "location": "Security",
+        })
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        for event in events:
+            f.write(json.dumps(event) + "\n")
+
+    print(f"  Total: {len(events)} Windows events")
+    print(f"  Insiden: 8 login failures (external) + 2 user created + 2 normal logon")

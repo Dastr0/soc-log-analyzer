@@ -18,7 +18,9 @@ from typing import List, Tuple
 
 from src.schema import CommonEvent, Incident
 from src.parsers.wazuh import WazuhParser
-from src.normalizer import normalize_wazuh
+from src.parsers.fortigate import FortiGateParser
+from src.parsers.windows import WindowsParser
+from src.normalizer import normalize_wazuh, normalize_fortigate, normalize_windows
 from src.correlation import correlate
 from src.detection import detect
 from src.reporter import report
@@ -29,10 +31,14 @@ from src.reporter import report
 
 PARSER_MAP = {
     "wazuh": WazuhParser,
+    "fortigate": FortiGateParser,
+    "windows": WindowsParser,
 }
 
 NORMALIZER_MAP = {
     "wazuh": normalize_wazuh,
+    "fortigate": normalize_fortigate,
+    "windows": normalize_windows,
 }
 
 SUPPORTED_SOURCES = sorted(PARSER_MAP.keys())
@@ -266,13 +272,32 @@ patterns:
 
 
 def cmd_sample(args: argparse.Namespace) -> None:
-    """Command: sample — generate sample Wazuh alerts buat testing."""
-    from src.sample_data import generate_sample
-    output_path = args.output or "data/sample-wazuh-alerts.json"
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    generate_sample(output_path)
-    print(f"[✓] Sample data: {output_path}")
-    print(f"[i] Jalankan: python3 main.py analyze --source wazuh --file {output_path}")
+    """Command: sample — generate sample alerts untuk testing."""
+    from src.sample_data import generate_sample, generate_sample_fortigate, generate_sample_windows
+
+    sources = args.source or ["wazuh", "fortigate", "windows"]
+
+    for source in sources:
+        if source == "wazuh":
+            out = args.output or "data/sample-wazuh-alerts.json"
+            generate_sample(out)
+            print(f"[✓] Wazuh sample: {out}")
+        elif source == "fortigate":
+            out = "data/sample-fortigate-fw.log"
+            generate_sample_fortigate(out)
+            print(f"[✓] FortiGate sample: {out}")
+        elif source == "windows":
+            out = "data/sample-windows-security.json"
+            generate_sample_windows(out)
+            print(f"[✓] Windows sample: {out}")
+
+    print(f"\n[i] Run:")
+    if "wazuh" in sources:
+        print(f"    python3 main.py analyze -s wazuh -f data/sample-wazuh-alerts.json [--detail]")
+    if "fortigate" in sources:
+        print(f"    python3 main.py analyze -s fortigate -f data/sample-fortigate-fw.log [--detail]")
+    if "windows" in sources:
+        print(f"    python3 main.py analyze -s windows -f data/sample-windows-security.json [--detail]")
 
 
 # ─── Helpers ────────────────────────────────────────────────────────
@@ -282,12 +307,15 @@ def _detect_source(filename: str) -> str:
     f = filename.lower()
     if "wazuh" in f or "alert" in f and f.endswith(".json"):
         return "wazuh"
-    # Placeholder untuk parser future
-    # if "fortigate" in f or "fw.log" in f:
-    #     return "fortigate"
-    # if "cyberark" in f or "pam" in f:
-    #     return "cyberark"
-    return ""  # nggak dikenali
+    if "fortigate" in f or "fg-" in f or "fw.log" in f or "forti" in f:
+        return "fortigate"
+    if "windows" in f or "win" in f or "security" in f or "sysmon" in f:
+        return "windows"
+    if "cyberark" in f or "pam" in f:
+        return "cyberark"
+    if f.endswith(".json") and not any(k in f for k in ["wazuh", "forti", "win", "cyber"]):
+        return "wazuh"  # default: assume Wazuh JSONL
+    return ""
 
 
 def _load_trusted_config() -> dict:
@@ -313,8 +341,8 @@ def main():
 
     # --- analyze ---
     a = sub.add_parser("analyze", help="Parse, correlate, detect, and report")
-    a.add_argument("--source", choices=SUPPORTED_SOURCES, help="Tipe log source")
-    a.add_argument("--file", help="Path ke file log")
+    a.add_argument("-s", "--source", choices=SUPPORTED_SOURCES, help="Tipe log source")
+    a.add_argument("-f", "--file", help="Path ke file log")
     a.add_argument("--dir", help="Path ke direktori berisi file log (auto-detect source)")
     a.add_argument("--detail", action="store_true",
                    help="Tampilkan detail per insiden (Level 2)")
@@ -324,8 +352,8 @@ def main():
 
     # --- parse ---
     p = sub.add_parser("parse", help="Hanya parse + normalize, output JSON")
-    p.add_argument("--source", choices=SUPPORTED_SOURCES, required=True)
-    p.add_argument("--file", required=True)
+    p.add_argument("-s", "--source", choices=SUPPORTED_SOURCES, required=True)
+    p.add_argument("-f", "--file", required=True)
     p.add_argument("--output", help="Simpan ke file (default: stdout)")
 
     # --- init ---
@@ -333,7 +361,9 @@ def main():
 
     # --- sample ---
     s = sub.add_parser("sample", help="Generate sample data Wazuh untuk testing")
-    s.add_argument("--output", help="Path output (default: data/sample-wazuh-alerts.json)")
+    s.add_argument("--source", choices=SUPPORTED_SOURCES, nargs="+",
+                   help="Source yang mau digenerate (default: semua)")
+    s.add_argument("--output", help="Path output (hanya untuk --source wazuh)")
 
     args = parser.parse_args()
 
