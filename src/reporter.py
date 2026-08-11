@@ -227,7 +227,10 @@ def _write_incident_detail(incident: Incident, out: Optional[TextIO] = None) -> 
 
     ports = set(e.dst_port for e in incident.events if e.dst_port is not None)
     if ports:
-        p(f"  Port target    : {', '.join(str(p) for p in sorted(ports, key=lambda x: int(x))[:10])}"
+        def _port_key(p):
+            try: return int(p)
+            except (ValueError, TypeError): return 0
+        p(f"  Port target    : {', '.join(str(p) for p in sorted(ports, key=_port_key)[:10])}"
           f"{' (+' + str(len(ports) - 10) + ' lainnya)' if len(ports) > 10 else ''}")
 
     hosts = set(e.dst_host for e in incident.events if e.dst_host)
