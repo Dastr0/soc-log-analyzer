@@ -33,6 +33,24 @@ CORRELATION_RULES = [
         "min_events": 10,
     },
     {
+        "name": "src_ip (firewall/blocked)",
+        "key_fields": ["src_ip"],
+        "window_minutes": 15,
+        "min_events": 5,
+    },
+    {
+        "name": "src_ip + dst_port",
+        "key_fields": ["src_ip", "dst_port"],
+        "window_minutes": 15,
+        "min_events": 3,
+    },
+    {
+        "name": "src_ip + dst_ip",
+        "key_fields": ["src_ip", "dst_ip"],
+        "window_minutes": 15,
+        "min_events": 3,
+    },
+    {
         "name": "src_host + process",
         "key_fields": ["src_host", "process"],
         "window_minutes": 60,
