@@ -1,0 +1,16 @@
+# Trusted Hosts — IP/host yang dikenal aman.
+# Isi dengan IP scanner, subnet admin, atau host internal yg nggak mencurigakan.
+
+# Vulnerability scanner & monitoring tools (dikenali dari user-agent/action)
+known_scanners:
+  ips: []
+  #  - 10.0.1.50       # SIEM-NESSUS (daily scheduled scan)
+  subnets: []
+  #  - 10.0.3.0/24     # SecOps lab subnet (pen-test, red team)
+
+# Host internal yang di-trust (admin workstation, monitoring, SIEM sendiri)
+trusted_hosts:
+  ips: []
+  #  - 10.0.2.10        # MONITOR-PRTG (network monitoring)
+  subnets: []
+  #  - 10.0.0.0/8       # All internal networks

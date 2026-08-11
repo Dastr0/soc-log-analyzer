@@ -1,0 +1,47 @@
+# Detection Rules v0.2.0
+# Pola serangan yang dideteksi oleh detection engine.
+# Nambah rules baru: tinggal tambah entry. Nggak perlu ubah kode Python.
+
+patterns:
+  - name: brute_force
+    description: "Brute force attack (multiple login failures from single source)"
+    action: login_failed
+    min_events: 10
+    window_minutes: 15
+
+  - name: port_scan
+    description: "Port scan / reconnaissance (single IP → many ports in short window)"
+    min_unique_ports: 10
+    window_minutes: 5
+
+  - name: suspicious_process
+    description: "Suspicious process execution (encoded PowerShell, WMIC, certutil, ...)"
+    process_keywords:
+      - powershell -enc
+      - powershell -e
+      - wmic
+      - rundll32
+      - certutil
+      - schtasks /create
+      - invoke-expression
+      - downloadstring
+      - frombase64string
+    window_minutes: 60
+
+  - name: priv_escalation
+    description: "Privilege escalation attempt"
+    action: priv_escalation
+    min_severity: 3
+    window_minutes: 60
+
+  - name: lateral_movement
+    description: "Lateral movement (1 internal host → multiple hosts on sensitive ports)"
+    dst_ports: [22, 445, 3389, 5985, 5986]
+    min_unique_dst_hosts: 3
+    window_minutes: 30
+
+  - name: data_exfil
+    description: "Potential data exfiltration (high-volume outbound connections)"
+    action: connection_outbound
+    min_events: 50
+    window_minutes: 60
