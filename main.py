@@ -333,6 +333,34 @@ patterns:
     else:
         print(f"[i] Already exists: {rules_path}")
 
+    # csv_mappings.yaml
+    csv_path = Path("config/csv_mappings.yaml")
+    if not csv_path.exists():
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_content = (
+            "# CSV Column Mapping — custom mapping kolom CSV ke field standar.\n"
+            "# Tambahin mapping buat kolom export Elastic Discover lu sendiri.\n"
+            "# Format: \"nama_kolom_di_CSV\": \"nama_field_tujuan\"\n"
+            "#\n"
+            "# Mapping di sini akan di-merge dengan built-in aliases.\n"
+            "# Mapping per-source (wazuh, fortigate, windows) + global fallback.\n\n"
+            "wazuh:\n"
+            "  # @timestamp: timestamp   # contoh: mapping kolom @timestamp\n"
+            "  # src_ip: data.srcip\n\n"
+            "fortigate:\n"
+            "  # SourceIP: srcip   # contoh: mapping FortiGate CSV header\n"
+            "  # DestPort: dstport\n\n"
+            "windows:\n"
+            "  # AccountName: event_data.TargetUserName\n"
+            "  # ComputerName: computer_name\n\n"
+            "global:\n"
+            "  # mapping yang berlaku untuk semua source\n"
+        )
+        csv_path.write_text(csv_content)
+        print(f"[✓] Created: {csv_path}")
+    else:
+        print(f"[i] Already exists: {csv_path}")
+
 
 def cmd_sample(args: argparse.Namespace) -> None:
     """Command: sample — generate sample alerts untuk testing."""

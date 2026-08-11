@@ -8,13 +8,15 @@ Parser ini membalikkan jadi struktur nested dict (sama dengan format
 yang dihasilkan parser asli), lalu auto-detect source type dari nama
 kolom. Output bisa langsung masuk ke normalizer yang sudah ada.
 
-Dengan parser ini, lu bisa langsung analyze file CSV hasil export
-Elastic tanpa harus convert ke JSONL dulu.
+Custom mapping: tambahin kolom CSV lu sendiri di config/csv_mappings.yaml.
 """
 
 import csv
 import sys
+from pathlib import Path
 from typing import Iterator, Optional
+
+import yaml
 
 from src.parsers.base import BaseParser
 
@@ -23,11 +25,14 @@ class CsvElasticParser(BaseParser):
     """
     Parser universal untuk CSV export dari Elastic Discover.
 
-    Auto-detect source type dari nama kolom CSV (rule.id → wazuh,
-    devname → fortigate, winlog.event_id → windows).
-
-    Output: dict nested yang kompatibel dengan normalizer yang sudah ada.
+    Auto-detect source type dari nama kolom CSV.
+    Column mapping: merge config/csv_mappings.yaml + built-in aliases.
+    Lu bisa nambah mapping sendiri di file YAML tanpa ubah kode Python.
     """
+
+    # Cache YAML mappings (load sekali)
+    _yaml_cache: Optional[dict] = None
+    _yaml_loaded: bool = False
 
     def __init__(self, filepath: str, source_hint: Optional[str] = None):
         super().__init__(filepath)
@@ -43,7 +48,7 @@ class CsvElasticParser(BaseParser):
             if not reader.fieldnames:
                 return
 
-            # Deteksi source dari kolom
+            # Deteksi source
             self._detected_source = (
                 self._detect_source(reader.fieldnames)
                 or self.source_hint
@@ -80,72 +85,58 @@ class CsvElasticParser(BaseParser):
                 f"CSV ({self._detected_source}) (100%)\n"
             )
 
+    # ── Source Detection ──────────────────────────────────────────
+
     def _detect_source(self, fieldnames: list) -> str:
         """Deteksi source type dari nama-nama kolom CSV."""
         fields = set(f.lower() for f in fieldnames)
 
-        # Wazuh: ada rule.id, agent.name
         if {"rule.id", "agent.name"} & fields or {"rule_id", "agent_name"} & fields:
             return "wazuh"
 
-        # FortiGate: ada devname atau type=traffic
-        if "devname" in fields or ("type" in fields and "srcip" in fields):
+        # FortiGate: devname/device_name/hostname + traffic fields
+        if {"devname", "device_name", "hostname", "sourceip", "destip"} & fields:
             return "fortigate"
+        if "type" in fields and "srcip" in fields:
+            return "fortigate"
+        if "action" in fields and {"srcip", "sourceip", "destip", "dstip"} & fields:
+            if not {"rule.id", "agent.name", "event_id"} & fields:
+                return "fortigate"
 
-        # Windows: ada winlog.event_id, event_id, dstuser + windows context
         if {"winlog.event_id", "event_id", "event.code"} & fields:
             return "windows"
 
-        # Windows fallback: ada dstuser + source srcip (Wazuh Windows agent)
         if "dstuser" in fields and "srcip" in fields:
-            # Masih ambigu: cek lokasi Security → Windows
-            if any(
-                "security" in str(f).lower() or "windows" in str(f).lower()
-                for f in fieldnames
-            ):
+            if any("security" in f.lower() or "windows" in f.lower() for f in fieldnames):
                 return "windows"
 
-        # Wazuh fallback: ada rule.level dan agent.ip
         if "rule.level" in fields or "rule_id" in fields:
             return "wazuh"
 
         return "unknown"
 
-    def _row_to_nested(self, row: dict) -> Optional[dict]:
-        """
-        Konversi CSV row (flat dict dengan dot-notation keys) → nested dict.
+    # ── Row Conversion ───────────────────────────────────────────
 
-        Contoh:
-          Input:  {"rule.id": "5710", "agent.name": "DC01", "data.srcip": "1.2.3.4"}
-          Output: {"rule": {"id": "5710"}, "agent": {"name": "DC01"}, "data": {"srcip": "1.2.3.4"}}
-        """
+    def _row_to_nested(self, row: dict) -> Optional[dict]:
+        """Konversi CSV row (flat dict, dot-notation) → nested dict."""
         result: dict = {}
         has_content = False
 
         for key, value in row.items():
             key = key.strip()
             value = (value or "").strip()
-
-            # Skip kolom kosong
             if not key or value == "":
                 continue
-
             has_content = True
 
-            # Normalisasi nama kolom yang umum di Elastic
             key_norm = self._normalize_key(key)
-
-            # Pecah berdasarkan dot: "rule.id" → ["rule", "id"]
             parts = key_norm.split(".")
 
-            # Sisipkan ke nested dict
             target = result
             for part in parts[:-1]:
                 if part not in target:
                     target[part] = {}
                 elif not isinstance(target[part], dict):
-                    # Conflict: key sudah ada sebagai nilai non-dict
-                    # Wrap dalam dict dengan key "_value"
                     target[part] = {"_value": target[part]}
                 target = target[part]
 
@@ -153,68 +144,89 @@ class CsvElasticParser(BaseParser):
 
         return result if has_content else None
 
+    # ── YAML Mapping ─────────────────────────────────────────────
+
+    @classmethod
+    def _load_yaml_mappings(cls) -> dict:
+        """Load column mappings dari config/csv_mappings.yaml. Cache sekali.
+        Keys di-lowercase-kan otomatis untuk case-insensitive lookup."""
+        if cls._yaml_loaded:
+            return cls._yaml_cache or {}
+
+        cls._yaml_loaded = True
+        paths = [
+            Path("config/csv_mappings.yaml"),
+            Path.home() / ".hermes" / "soc-log-analyzer" / "csv_mappings.yaml",
+        ]
+        for p in paths:
+            if p.exists():
+                try:
+                    raw = yaml.safe_load(p.read_text()) or {}
+                    # Lowercase-kan semua key (nested)
+                    cls._yaml_cache = _deep_lowercase_keys(raw)
+                    break
+                except Exception:
+                    pass
+        return cls._yaml_cache or {}
+
     def _normalize_key(self, key: str) -> str:
-        """Normalisasi nama kolom dari berbagai format Elastic."""
-        # Mapping alias kolom yang sering muncul beda-beda
-        aliases = {
-            # Stempel waktu
-            "@timestamp": "timestamp",
-            "ts": "timestamp",
-            # Wazuh nested
-            "rule_id": "rule.id",
-            "rule_level": "rule.level",
-            "rule_description": "rule.description",
-            "rule_groups": "rule.groups",
-            "agent_id": "agent.id",
-            "agent_name": "agent.name",
-            "agent_ip": "agent.ip",
-            "data_srcip": "data.srcip",
-            "src_ip": "data.srcip",
-            "data_srcport": "data.srcport",
-            "srcport": "data.srcport",
-            "data_srcuser": "data.dstuser",
-            "data_dstuser": "data.dstuser",
-            "data_dstip": "data.dstip",
-            "dst_ip": "data.dstip",
-            "data_dstport": "data.dstport",
-            "dstport": "data.dstport",
-            "data_proto": "data.proto",
-            "data_command": "data.command",
-            "location": "location",
-            "full_log": "full_log",
-            "data_id": "data.id",
-            # FortiGate
-            "srcip": "srcip",
-            "dstip": "dstip",
-            "proto": "proto",
-            "action": "action",
-            "devname": "devname",
-            "service": "service",
-            "type": "type",
-            "subtype": "subtype",
-            "policyid": "policyid",
-            "sentbyte": "sentbyte",
-            "rcvdbyte": "rcvdbyte",
-            # Windows
-            "winlog_event_id": "winlog.event_id",
-            "event_code": "winlog.event_id",
-            "event_id": "event_id",
-            "host_name": "host.name",
-            "host_ip": "host.ip",
+        """
+        Normalisasi nama kolom CSV → field standar.
+        Prioritas: YAML (source-specific) > YAML (global) > built-in > original.
+        """
+        key_lower = key.lower()
+        yaml_map = self._load_yaml_mappings()
+        source = self._detected_source or self.source_hint or ""
+
+        # 1. YAML: mapping spesifik source
+        if source in yaml_map and isinstance(yaml_map[source], dict):
+            if key_lower in yaml_map[source]:
+                return yaml_map[source][key_lower]
+
+        # 2. YAML: mapping global
+        global_map = yaml_map.get("global", {})
+        if isinstance(global_map, dict) and key_lower in global_map:
+            return global_map[key_lower]
+
+        # 3. Built-in hardcoded aliases (fallback)
+        builtin = {
+            "@timestamp": "timestamp", "ts": "timestamp",
+            "rule_id": "rule.id", "rule_level": "rule.level",
+            "rule_description": "rule.description", "rule_groups": "rule.groups",
+            "agent_id": "agent.id", "agent_name": "agent.name", "agent_ip": "agent.ip",
+            "data_srcip": "data.srcip", "src_ip": "data.srcip",
+            "data_srcport": "data.srcport", "srcport": "data.srcport",
+            "data_srcuser": "data.dstuser", "data_dstuser": "data.dstuser",
+            "data_dstip": "data.dstip", "dst_ip": "data.dstip",
+            "data_dstport": "data.dstport", "dstport": "data.dstport",
+            "data_proto": "data.proto", "data_command": "data.command",
+            "location": "location", "full_log": "full_log", "data_id": "data.id",
+            "srcip": "srcip", "dstip": "dstip", "proto": "proto",
+            "action": "action", "devname": "devname", "service": "service",
+            "type": "type", "subtype": "subtype",
+            "policyid": "policyid", "sentbyte": "sentbyte", "rcvdbyte": "rcvdbyte",
+            "winlog_event_id": "winlog.event_id", "event_code": "winlog.event_id",
+            "event_id": "event_id", "host_name": "host.name", "host_ip": "host.ip",
             "target_user_name": "event_data.TargetUserName",
             "targetusername": "event_data.TargetUserName",
-            "ip_address": "event_data.IpAddress",
-            "ipaddress": "event_data.IpAddress",
-            "computer_name": "computer_name",
-            "message": "full_log",
+            "ip_address": "event_data.IpAddress", "ipaddress": "event_data.IpAddress",
+            "computer_name": "computer_name", "message": "full_log",
         }
+        if key_lower in builtin:
+            return builtin[key_lower]
 
-        key_lower = key.lower()
-        if key_lower in aliases:
-            return aliases[key_lower]
-
+        # 4. Pass-through (nama kolom tidak dimodifikasi)
         return key
 
     @property
     def detected_source(self) -> Optional[str]:
         return self._detected_source
+
+
+# ── Module-level helpers ─────────────────────────────────────────
+
+def _deep_lowercase_keys(obj):
+    """Rekursif lowercase semua key di dict (top-level aja untuk 1-level nest)."""
+    if isinstance(obj, dict):
+        return {k.lower(): _deep_lowercase_keys(v) for k, v in obj.items()}
+    return obj

@@ -133,6 +133,25 @@ trusted_hosts:       # host internal yang di-trust
 Makin lengkap config ini, makin jarang false alarm dari aktivitas
 internal yang sah (scan berkala, maintenance, monitoring).
 
+### 7. Custom CSV column mapping
+
+Kalau export CSV dari Elastic Discover punya nama kolom yang beda
+dari standar, tambahin mapping di `config/csv_mappings.yaml`:
+
+```yaml
+fortigate:
+  SourceIP: srcip          # CSV header "SourceIP" → field standar "srcip"
+  DestPort: dstport
+  fw_action: action
+
+windows:
+  AccountName: event_data.TargetUserName
+  LogonType: event_data.LogonType
+```
+
+Mapping per-source + global fallback digabung (merge). Nggak perlu
+ubah kode Python — tinggal tambahin baris di YAML.
+
 ## Arsitektur
 
 ```
