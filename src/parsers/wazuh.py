@@ -6,6 +6,7 @@ Membaca file yang diexport dari Elastic (atau dump langsung dari Wazuh).
 """
 
 import json
+import sys
 from typing import Iterator, Optional
 
 from src.parsers.base import BaseParser
@@ -64,11 +65,11 @@ class WazuhParser(BaseParser):
                 if processed % 1000 == 0 and self.total_lines:
                     pct = int(processed / self.total_lines * 100)
                     bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
-                    print(f"\r  [{bar}] {processed:,}/{self.total_lines:,} Wazuh alerts ({pct}%)",
-                          end="", flush=True)
+                    sys.stderr.write(f"\r  [{bar}] {processed:,}/{self.total_lines:,} Wazuh alerts ({pct}%)")
+                    sys.stderr.flush()
 
         if self.total_lines and processed:
-            print(f"\r  [{'█' * 20}] {processed:,}/{self.total_lines:,} Wazuh alerts (100%)")
+            sys.stderr.write(f"\r  [{'█' * 20}] {processed:,}/{self.total_lines:,} Wazuh alerts (100%)\n")
 
     def _is_valid_alert(self, event: dict) -> bool:
         """Validasi minimal: harus punya timestamp & rule object."""

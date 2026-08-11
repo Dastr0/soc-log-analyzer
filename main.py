@@ -162,12 +162,12 @@ def cmd_parse(args: argparse.Namespace) -> None:
               f"Support: {', '.join(SUPPORTED_SOURCES)}")
         sys.exit(1)
 
-    print(f"[⏳] Parsing: {args.file}")
+    sys.stderr.write(f"[⏳] Parsing: {args.file}\n")
     parser = parser_cls(args.file)
     raw_events = list(parser.parse())
-    print(f"[✓] Parsed: {len(raw_events)} events")
+    sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events\n")
 
-    print(f"[⏳] Normalizing...")
+    sys.stderr.write(f"[⏳] Normalizing...\n")
     events = []
     for raw in raw_events:
         try:
@@ -189,11 +189,9 @@ def cmd_parse(args: argparse.Namespace) -> None:
     output = json.dumps(events, indent=2)
     if args.output:
         Path(args.output).write_text(output)
-        print(f"[✓] Output: {args.output}")
+        sys.stderr.write(f"[✓] Output saved: {args.output}\n")
     else:
-        print(output[:5000])
-        if len(output) > 5000:
-            print("... (truncated for display, use --output to save full result)")
+        print(output)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
