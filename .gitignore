@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets — jangan pernah commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data & logs — sample log bisa mengandung data sensitif
+data/*
+!data/.gitkeep
+*.log
+*.jsonl
+alerts.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
