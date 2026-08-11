@@ -102,7 +102,8 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     # --- FIELD EXTRACTION ---
     source_ns = raw.get("source", {}) if isinstance(raw.get("source"), dict) else {}
     dest_ns = raw.get("destination", {}) if isinstance(raw.get("destination"), dict) else {}
-    src_ip = (data.get("srcip") or source_ns.get("ip")
+    src_ip = (data.get("srcip") or data.get("ip")
+              or source_ns.get("ip")
               or predecoder.get("srcip") or predecoder.get("source.ip"))
     dst_ip = (data.get("dstip") or dest_ns.get("ip")
               or predecoder.get("dstip") or predecoder.get("destination.ip")
@@ -133,32 +134,55 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
             action = "connection_closed"
     severity = _severity_wazuh(level)
 
-    full_log_text = raw.get("full_log", "")
+    # prefer log.original/host > full_log > message (longest first)
+    candidates = [
+        raw.get("log.original", ""),
+        raw.get("host", ""),
+        raw.get("full_log", ""),
+        raw.get("message", ""),
+    ]
+    full_log_text = max(
+        (c for c in candidates if c and len(c) > 50),
+        key=len, default=""
+    )
 
     # ── Wazuh archives: structured fields kosong → parse full_log ──
     is_archive = (not src_ip and not user and not process and not protocol
                   and level == 0 and full_log_text)
-    if is_archive and full_log_text:
+    # Also: if structured fields exist but are clearly invalid (non-IP strings)
+    src_invalid = src_ip and not _looks_like_ip(src_ip)
+    dst_invalid = dst_ip and not _looks_like_ip(dst_ip)
+    needs_fallback = is_archive or src_invalid or dst_invalid
+
+    if needs_fallback and full_log_text:
         fallback = _extract_from_full_log(full_log_text)
-        src_ip = fallback.get("srcip") or src_ip
-        dst_ip = fallback.get("dstip") or dst_ip
+        if src_invalid or not src_ip:
+            src_ip = fallback.get("srcip") or src_ip
+        if dst_invalid or not dst_ip:
+            dst_ip = fallback.get("dstip") or dst_ip
         if not dst_port:
             p = fallback.get("dstport")
             if p: dst_port = _safe_int(p)
-        if not user:
+        if not user or user in ("N/A", "?"):
             user = fallback.get("user")
         if not protocol:
             protocol = fallback.get("proto")
-        # Action from full_log pattern
         if not action or action == "generic_alert":
             fb_action = fallback.get("action")
             if fb_action:
                 action = fb_action
-        # Severity: traffic deny=HIGH, archive=MED default
         if level == 0 and severity == 1:
             sev = fallback.get("severity")
             if sev:
                 severity = sev
+
+    # Post-normalize cleanup: strip obviously invalid values
+    if src_ip and not _looks_like_ip(src_ip):
+        src_ip = None
+    if dst_ip and not _looks_like_ip(dst_ip):
+        dst_ip = None
+    if user and (user == "N/A" or len(user) > 30 or ":" in user):
+        user = None  # UUID/MAC/N/A → None
 
     if not process:
         if "powershell -enc" in str(full_log_text).lower():
@@ -550,3 +574,11 @@ def _to_int(value, default=0):
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _looks_like_ip(s: str) -> bool:
+    """Cek apakah string berbentuk IP address (hanya digit + dots, 4 oktet)."""
+    if not s or "." not in s:
+        return False
+    parts = s.split(".")
+    return len(parts) == 4 and all(p.isdigit() for p in parts)
