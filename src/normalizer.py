@@ -85,7 +85,7 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
 
     # --- RULE ---
     rule = raw.get("rule", {})
-    level = rule.get("level", 0) if isinstance(rule, dict) else 0
+    level = _to_int(rule.get("level", 0)) if isinstance(rule, dict) else 0
     description = rule.get("description", "") if isinstance(rule, dict) else ""
 
     # --- AGENT ---
@@ -287,7 +287,7 @@ def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
 
     # Rule
     rule = raw.get("rule", {}) if isinstance(raw.get("rule"), dict) else {}
-    level = rule.get("level", 0)
+    level = _to_int(rule.get("level", 0))
 
     # Agent (host yang dimonitor — biasanya target Windows host)
     agent = raw.get("agent", {}) if isinstance(raw.get("agent"), dict) else {}
@@ -418,3 +418,11 @@ def _is_ip_internal(ip: str) -> bool:
         if pattern.match(ip):
             return True
     return False
+
+
+def _to_int(value, default=0):
+    """Convert string/int ke int, fallback ke default."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default

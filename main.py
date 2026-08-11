@@ -206,18 +206,35 @@ def cmd_parse(args: argparse.Namespace) -> None:
         print("[!] Error: butuh --file dan --source.")
         sys.exit(1)
 
-    parser_cls = PARSER_MAP.get(args.source)
-    normalizer_fn = NORMALIZER_MAP.get(args.source)
+    is_csv = args.file.lower().endswith(".csv")
 
-    if not parser_cls or not normalizer_fn:
-        print(f"[!] Parser untuk '{args.source}' belum tersedia. "
-              f"Support: {', '.join(SUPPORTED_SOURCES)}")
-        sys.exit(1)
+    if is_csv:
+        # CSV → auto-detect source → normalize
+        sys.stderr.write(f"[⏳] Parsing CSV: {args.file} (auto-detect)...\n")
+        csv_parser = CsvElasticParser(args.file, source_hint=args.source)
+        raw_events = list(csv_parser.parse())
+        detected = csv_parser.detected_source or "unknown"
+        sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events → {detected}\n")
 
-    sys.stderr.write(f"[⏳] Parsing: {args.file}\n")
-    parser = parser_cls(args.file)
-    raw_events = list(parser.parse())
-    sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events\n")
+        if detected not in NORMALIZER_MAP:
+            print(f"[!] Source '{detected}' belum ada normalizer. "
+                  f"Support: {', '.join(NORMALIZER_MAP)}")
+            sys.exit(1)
+        normalizer_fn = NORMALIZER_MAP[detected]
+    else:
+        # Native JSONL/syslog
+        parser_cls = PARSER_MAP.get(args.source)
+        normalizer_fn = NORMALIZER_MAP.get(args.source)
+
+        if not parser_cls or not normalizer_fn:
+            print(f"[!] Parser untuk '{args.source}' belum tersedia. "
+                  f"Support: {', '.join(SUPPORTED_SOURCES)}")
+            sys.exit(1)
+
+        sys.stderr.write(f"[⏳] Parsing: {args.file}\n")
+        parser = parser_cls(args.file)
+        raw_events = list(parser.parse())
+        sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events\n")
 
     sys.stderr.write(f"[⏳] Normalizing...\n")
     events = []
