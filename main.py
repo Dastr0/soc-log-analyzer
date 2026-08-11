@@ -402,7 +402,7 @@ def main():
     p = sub.add_parser("parse", help="Hanya parse + normalize, output JSON")
     p.add_argument("-s", "--source", choices=SUPPORTED_SOURCES, required=True)
     p.add_argument("-f", "--file", required=True)
-    p.add_argument("--output", help="Simpan ke file (default: stdout)")
+    p.add_argument("-o", "--output", help="Simpan ke file (default: stdout)")
 
     # --- init ---
     sub.add_parser("init", help="Buat file konfigurasi template")

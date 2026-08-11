@@ -149,7 +149,7 @@ class CsvElasticParser(BaseParser):
                     target[part] = {"_value": target[part]}
                 target = target[part]
 
-            target[parts[-1]] = self._cast_value(value)
+            target[parts[-1]] = value
 
         return result if has_content else None
 
@@ -214,24 +214,6 @@ class CsvElasticParser(BaseParser):
             return aliases[key_lower]
 
         return key
-
-    def _cast_value(self, value: str):
-        """Coba convert string ke int/float kalau bisa."""
-        value = value.strip()
-
-        # Angka
-        try:
-            if "." in value:
-                return float(value)
-            return int(value)
-        except ValueError:
-            pass
-
-        # Boolean
-        if value.lower() in ("true", "false"):
-            return value.lower() == "true"
-
-        return value
 
     @property
     def detected_source(self) -> Optional[str]:
