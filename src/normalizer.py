@@ -586,8 +586,8 @@ def _looks_like_uuid(s: str) -> bool:
     if not s or "-" not in s or len(s) < 20:
         return False
     parts = s.split("-")
-    # UUID v4: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    return len(parts) >= 4 and all(
+    # UUID v4: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (or shorter variants)
+    return len(parts) >= 3 and all(
         all(c.lower() in "0123456789abcdef" for c in p)
         for p in parts[:5]
     )
