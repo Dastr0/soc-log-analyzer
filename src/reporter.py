@@ -225,9 +225,9 @@ def _write_incident_detail(incident: Incident, out: Optional[TextIO] = None) -> 
     p(f"  IP terkait     : {', '.join(sorted(incident.unique_ips)) if incident.unique_ips else '—'}")
     p(f"  User terkait   : {', '.join(sorted(incident.unique_users)) if incident.unique_users else '—'}")
 
-    ports = set(e.dst_port for e in incident.events if e.dst_port)
+    ports = set(e.dst_port for e in incident.events if e.dst_port is not None)
     if ports:
-        p(f"  Port target    : {', '.join(str(p) for p in sorted(ports)[:10])}"
+        p(f"  Port target    : {', '.join(str(p) for p in sorted(ports, key=lambda x: int(x))[:10])}"
           f"{' (+' + str(len(ports) - 10) + ' lainnya)' if len(ports) > 10 else ''}")
 
     hosts = set(e.dst_host for e in incident.events if e.dst_host)
