@@ -115,6 +115,41 @@ def inspect(filepath: str, max_sample: int = 5):
 
     print()
 
+    # ── Auto-mapping suggestion ──
+    unknown_cols = []
+    for col in fieldnames:
+        col_lower = col.lower().strip()
+        if not (source_map.get(col_lower) or global_map.get(col_lower)):
+            # Ambil sample values buat hint
+            sample_vals = []
+            for row in sample_rows:
+                v = (row.get(col, "") or "").strip()
+                if v:
+                    sample_vals.append(v)
+            sample_str = ", ".join(sample_vals[:3])[:50] if sample_vals else "?"
+            unknown_cols.append((col, sample_str))
+
+    if unknown_cols:
+        print(f"{'─' * 70}")
+        print(f"  AUTO-MAPPING SUGGESTION — copy-paste ke config/csv_mappings.yaml:")
+        print(f"{'─' * 70}")
+        print(f"  {detected_source}:")
+        for col, sample in unknown_cols:
+            print(f"    # {col:30s} sample: {sample}")
+            print(f"    {col}: TARGET_FIELD_HERE")
+        print()
+        print(f"  Ganti TARGET_FIELD_HERE dengan field standar, contoh:")
+        if detected_source == "wazuh":
+            print(f"    rule.description / agent.ip / data.srcport / location / full_log")
+        elif detected_source == "fortigate":
+            print(f"    devname / dstip / service / policyid / sentbyte / proto")
+        elif detected_source == "windows":
+            print(f"    event_data.IpAddress / event_data.TargetUserName / host.name")
+        print(f"  Atau bikin prefix path: data.custom_field / extra.metadata")
+        print(f"{'─' * 70}")
+
+    print()
+
     # Sample values
     if sample_rows:
         print(f"{'─' * 70}")
