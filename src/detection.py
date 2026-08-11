@@ -144,8 +144,28 @@ def fp_scoring(incident: Incident, trusted_config: dict = None) -> float:
 
     # ── INDIKATOR TRUE POSITIVE (tambah skor) ──
 
-    # TP1: IP eksternal (+15)
-    external_ips = [ip for ip in incident.unique_ips if ip and not _is_internal_ip(ip)]
+    # TP0: Impossible pattern check — if physically impossible, skip TP boosts
+    impossible = False
+    if incident.start_time and incident.end_time:
+        dur_sec = (incident.end_time - incident.start_time).total_seconds()
+        if dur_sec < 1.0 and incident.event_count > 20:
+            # >20 events in <1 second = batch export artifact, not real attack
+            score -= 40
+            reasoning.append("[-40] Impossible: >20 event dalam <1 detik (batch export Elastic)")
+            impossible = True
+    if len(set(e.timestamp for e in events)) == 1 and len(events) > 10:
+        score -= 30
+        reasoning.append("[-30] Semua event timestamp identik (batch export, bukan real-time)")
+
+    # TP1: IP eksternal (+15) — only if source looks like actual IP
+    def _looks_like_ip(s):
+        """Validate minimally: contains dots and digits, not a hostname fragment."""
+        if not s or "." not in s:
+            return False
+        parts = s.split(".")
+        return all(p.isdigit() for p in parts) and len(parts) == 4
+
+    external_ips = [ip for ip in incident.unique_ips if ip and not _is_internal_ip(ip) and _looks_like_ip(ip)]
     if external_ips:
         score += 15
         reasoning.append(f"[+15] IP eksternal: {', '.join(list(external_ips)[:3])}")

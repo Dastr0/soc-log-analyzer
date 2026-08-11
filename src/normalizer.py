@@ -103,25 +103,52 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     src_ip = data.get("srcip") or predecoder.get("srcip")
     dst_ip = agent_ip
     dst_host = agent_name or predecoder.get("hostname")
-    src_port = data.get("srcport")
-    dst_port = data.get("dstport")
-    if isinstance(dst_port, str) and dst_port.isdigit():
-        dst_port = int(dst_port)
+    port_raw = data.get("dstport") or data.get("srcport")
+    dst_port = None
+    if isinstance(port_raw, str) and port_raw.isdigit():
+        dst_port = int(port_raw)
+    elif isinstance(port_raw, int):
+        dst_port = port_raw
 
     user = data.get("srcuser") or data.get("dstuser")
     process = data.get("command") or data.get("cmdline")
-    if not process:
-        full_log = raw.get("full_log", "")
-        if "powershell -enc" in str(full_log).lower():
-            process = full_log  # simpen full_log sebagai process buat analisa
+    protocol = data.get("proto")
+    action = _action_from_wazuh_rule(raw)  # default dari rule
+    severity = _severity_wazuh(level)
 
-    action = _action_from_wazuh_rule(raw)
+    full_log_text = raw.get("full_log", "")
+
+    # ── Wazuh archives: structured fields kosong → parse full_log ──
+    is_archive = (not src_ip and not user and not process and not protocol
+                  and level == 0 and full_log_text)
+    if is_archive and full_log_text:
+        fallback = _extract_from_full_log(full_log_text)
+        src_ip = fallback.get("srcip") or src_ip
+        dst_ip = fallback.get("dstip") or dst_ip
+        if not dst_port:
+            p = fallback.get("dstport")
+            if p: dst_port = _safe_int(p)
+        if not user:
+            user = fallback.get("user")
+        if not protocol:
+            protocol = fallback.get("proto")
+        # Action from full_log pattern
+        if not action or action == "generic_alert":
+            fb_action = fallback.get("action")
+            if fb_action:
+                action = fb_action
+        # Severity: traffic deny=HIGH, archive=MED default
+        if level == 0 and severity == 1:
+            sev = fallback.get("severity")
+            if sev:
+                severity = sev
+
+    if not process:
+        if "powershell -enc" in str(full_log_text).lower():
+            process = full_log_text
+
     result = "failure" if "fail" in description.lower() or action == "login_failed" else None
     result = "success" if action == "login_success" else result
-    protocol = data.get("proto")
-
-    # --- SEVERITY ---
-    severity = _severity_wazuh(level)
 
     # --- MITRE ATT&CK (dari rule.mitre) ---
     mitre = rule.get("mitre", {}) if isinstance(rule, dict) else {}
@@ -438,6 +465,66 @@ def _safe_int(value, default=None):
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _extract_from_full_log(full_log: str) -> dict:
+    """
+    Parse full_log text untuk extract fields (fallback saat structured data kosong).
+
+    Format yang dikenali:
+      - FortiGate syslog: key=value pairs
+      - SSH auth: "Failed password for user from IP port 22"
+      - Generic: ambil IP pertama, port pertama
+    """
+    import re
+    result: dict = {}
+    if not full_log:
+        return result
+
+    # ── FortiGate syslog: date=... time=... devname=... srcip=... ──
+    ftg_match = re.findall(r'(\w+)=("[^"]*"|\S+)', full_log)
+    if len(ftg_match) >= 5:
+        for k, v in ftg_match:
+            v = v.strip('"').strip("'")
+            k_lower = k.lower()
+            if k_lower == "srcip":
+                result["srcip"] = v
+            elif k_lower == "dstip":
+                result["dstip"] = v
+            elif k_lower in ("dstport", "srcport"):
+                result[k_lower] = v
+            elif k_lower == "proto":
+                result["proto"] = v
+            elif k_lower == "action" and v.lower() in ("accept", "deny", "drop", "block"):
+                result["action"] = "connection_allowed" if v.lower() == "accept" else "connection_blocked"
+                result["severity"] = 3 if v.lower() in ("deny", "block") else 2
+            elif k_lower == "devname":
+                result["devname"] = v
+
+    # ── SSH: Failed password for <user> from <ip> port <port> ──
+    ssh_match = re.match(
+        r".*[Ff]ailed password for (?:invalid user )?(\S+) from (\d+\.\d+\.\d+\.\d+) port (\d+)",
+        full_log
+    )
+    if ssh_match:
+        result["user"] = ssh_match.group(1)
+        result["srcip"] = result.get("srcip") or ssh_match.group(2)
+        result["dstport"] = result.get("dstport") or ssh_match.group(3)
+        result["action"] = "login_failed"
+        result["severity"] = result.get("severity") or 3
+
+    # ── Generic IP extraction (last resort) ──
+    ip_pattern = r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b'
+    ips = re.findall(ip_pattern, full_log)
+    # Filter out known non-routable artifacts (0.x, 127.x, etc.)
+    real_ips = [ip for ip in ips if not ip.startswith(("0.", "127.", "255."))]
+    if real_ips:
+        if not result.get("srcip"):
+            result["srcip"] = real_ips[0]
+        if len(real_ips) > 1 and not result.get("dstip"):
+            result["dstip"] = real_ips[-1]
+
+    return result
 
 
 def _to_int(value, default=0):
