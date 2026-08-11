@@ -125,7 +125,8 @@ class CsvElasticParser(BaseParser):
         for key, value in row.items():
             key = key.strip()
             value = (value or "").strip()
-            if not key or value == "":
+            # Skip empty & Elastic null placeholders
+            if not key or value == "" or value == "-":
                 continue
             has_content = True
 

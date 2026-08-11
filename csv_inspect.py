@@ -69,6 +69,7 @@ def inspect(filepath: str, max_sample: int = 5):
 
     mapped_count = 0
     unmapped_count = 0
+    dotted_cols = set()  # Track dot-notation columns
     for col in fieldnames:
         col_lower = col.lower().strip()
         mapped_to = (
@@ -77,11 +78,16 @@ def inspect(filepath: str, max_sample: int = 5):
         )
         if mapped_to:
             mapped_count += 1
-            status = "✓ mapped"
+            status = "✓ mapped (YAML)"
+        elif "." in col:
+            mapped_to = col  # dot-notation → native passthrough, works fine
+            mapped_count += 1
+            status = "✓ native (dot-notation)"
+            dotted_cols.add(col)
         else:
-            mapped_to = col  # pass-through
+            mapped_to = col
             unmapped_count += 1
-            status = "• passthrough (tidak dikenal)"
+            status = "• unmapped — perlu mapping!"
 
         print(f"  {col:33s} → {mapped_to:33s} {status}")
 
@@ -115,16 +121,16 @@ def inspect(filepath: str, max_sample: int = 5):
 
     print()
 
-    # ── Auto-mapping suggestion ──
+    # ── Auto-mapping suggestion (hanya kolom yang bener-bener unmapped) ──
     unknown_cols = []
     for col in fieldnames:
         col_lower = col.lower().strip()
-        if not (source_map.get(col_lower) or global_map.get(col_lower)):
-            # Ambil sample values buat hint
+        already_mapped = source_map.get(col_lower) or global_map.get(col_lower)
+        if not already_mapped and col not in dotted_cols:
             sample_vals = []
             for row in sample_rows:
                 v = (row.get(col, "") or "").strip()
-                if v:
+                if v and v != "-":
                     sample_vals.append(v)
             sample_str = ", ".join(sample_vals[:3])[:50] if sample_vals else "?"
             unknown_cols.append((col, sample_str))
