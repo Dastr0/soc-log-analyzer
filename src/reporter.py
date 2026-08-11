@@ -70,13 +70,13 @@ def report(incidents: List[Incident],
                  .docx → Word document, .txt/.md → teks, default → stdout teks.
     """
     # Auto-detect format from extension
-    format_docx = output_file and output_file.lower().endswith(".docx")
+    format_docx = output_file and output_file.lower().endswith((".docx", ".docs"))
 
     if format_docx:
         _write_docx(incidents, all_events, detail or verbose, verbose, output_file)
         return
 
-    out: TextIO = open(output_file, "w") if output_file else None
+    out: TextIO = open(output_file, "w", encoding="utf-8") if output_file else None
 
     try:
         _write_summary(incidents, all_events, out)

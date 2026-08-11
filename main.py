@@ -434,16 +434,18 @@ def _print_usage():
 def _detect_source(filename: str) -> str:
     """Auto-detect source type dari nama file."""
     f = filename.lower()
-    if "wazuh" in f or "alert" in f and f.endswith(".json"):
+    if "wazuh" in f or "alert" in f or "hids" in f:
         return "wazuh"
-    if "fortigate" in f or "fg-" in f or "fw.log" in f or "forti" in f:
+    if "fortigate" in f or "fg-" in f or "fw.log" in f or "forti" in f or "test-forti" in f:
         return "fortigate"
     if "windows" in f or "win" in f or "security" in f or "sysmon" in f:
         return "windows"
     if "cyberark" in f or "pam" in f:
         return "cyberark"
-    if f.endswith(".json") and not any(k in f for k in ["wazuh", "forti", "win", "cyber"]):
-        return "wazuh"  # default: assume Wazuh JSONL
+    if f.endswith(".csv") and not any(k in f for k in ["wazuh", "forti", "win", "cyber"]):
+        return "wazuh"  # default: assume Wazuh archive CSV
+    if f.endswith(".json") and not any(k in f for k in ["forti", "win", "cyber"]):
+        return "wazuh"
     return ""
 
 
