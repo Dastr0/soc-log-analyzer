@@ -393,6 +393,44 @@ def cmd_sample(args: argparse.Namespace) -> None:
 
 # ─── Helpers ────────────────────────────────────────────────────────
 
+def _print_usage():
+    """Tampilkan panduan ringkas saat script dijalankan tanpa sub-command."""
+    w = 60
+    print(f"\n{'═' * w}")
+    print(f"  SOC Log Analyzer v0.2.1  —  Multi-source log analysis untuk SOC")
+    print(f"{'═' * w}")
+    print(f"\n  3 langkah cepat:")
+    print(f"     1. python3 main.py sample")
+    print(f"     2. python3 main.py analyze -s wazuh -f data/sample-wazuh-alerts.json --detail")
+    print(f"     3. python3 main.py analyze --dir data/ --detail")
+    print(f"\n  ── Perintah ─────────────────────────────────────────────")
+    print(f"  analyze   Parse + correlate + detect + report (pipeline lengkap)")
+    print(f"  parse     Cuma parse + normalize → output JSON")
+    print(f"  sample    Generate data sample untuk testing")
+    print(f"  init      Buat file konfigurasi (trusted_hosts.yaml, dll)")
+    print(f"\n  ── Source ───────────────────────────────────────────────")
+    print(f"  -s wazuh      Wazuh HIDS (JSONL / CSV)")
+    print(f"  -s fortigate  FortiGate firewall (syslog / CSV)")
+    print(f"  -s windows    Windows EventLog (JSONL / CSV)")
+    print(f"\n  ── Contoh umum ──────────────────────────────────────────")
+    print(f"  python3 main.py analyze -s wazuh -f alerts.json")
+    print(f"  python3 main.py analyze -s wazuh -f alerts.json --detail")
+    print(f"  python3 main.py analyze -s wazuh -f alerts.json --detail -o report.txt")
+    print(f"  python3 main.py analyze --dir exports/ --detail          (multi-source)")
+    print(f"  python3 main.py analyze -s wazuh -f export.csv --detail  (CSV Elastic)")
+    print(f"  python3 main.py analyze -s wazuh -f alerts.json --incident 1 --verbose")
+    print(f"  python3 main.py parse -s wazuh -f alerts.json -o parsed.json")
+    print(f"\n  ── Output levels ────────────────────────────────────────")
+    print(f"  (default)  Executive Summary — ringkasan insiden")
+    print(f"  --detail   + timeline, metrik, reasoning FP per insiden")
+    print(f"  --verbose  + semua event per insiden")
+    print(f"\n  ── Help per sub-command ─────────────────────────────────")
+    print(f"  python3 main.py analyze -h")
+    print(f"  python3 main.py parse -h")
+    print(f"  python3 main.py sample -h")
+    print(f"{'─' * w}\n")
+
+
 def _detect_source(filename: str) -> str:
     """Auto-detect source type dari nama file."""
     f = filename.lower()
@@ -461,7 +499,7 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        _print_usage()
         sys.exit(1)
 
     if args.command == "analyze":
