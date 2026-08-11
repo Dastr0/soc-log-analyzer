@@ -110,8 +110,8 @@ soc-log-analyzer/
 | Source | Format | Status |
 |--------|--------|--------|
 | Wazuh HIDS | JSONL (alerts.json) | ✅ v0.2.0 |
-| FortiGate | syslog | planned |
-| Windows EventLog | EVTX / JSON | planned |
+| FortiGate | syslog (key=value) | ✅ v0.2.1 |
+| Windows EventLog | Wazuh JSONL / Elastic JSON | ✅ v0.2.1 |
 | Linux auth/syslog | syslog | planned |
 | CyberArk PAM | JSON / syslog | planned |
 
