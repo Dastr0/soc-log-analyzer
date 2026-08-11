@@ -100,15 +100,16 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     predecoder = raw.get("predecoder", {}) if isinstance(raw.get("predecoder"), dict) else {}
 
     # --- FIELD EXTRACTION ---
-    src_ip = (data.get("srcip") or data.get("source.ip")
+    source_ns = raw.get("source", {}) if isinstance(raw.get("source"), dict) else {}
+    dest_ns = raw.get("destination", {}) if isinstance(raw.get("destination"), dict) else {}
+    src_ip = (data.get("srcip") or source_ns.get("ip")
               or predecoder.get("srcip") or predecoder.get("source.ip"))
-    dst_ip = (data.get("dstip") or data.get("destination.ip")
+    dst_ip = (data.get("dstip") or dest_ns.get("ip")
               or predecoder.get("dstip") or predecoder.get("destination.ip")
               or agent_ip)
     dst_host = agent_name or predecoder.get("hostname")
-    # dst_port: try data.dstport, destination.port, source.port, suricata.eve.dest_port
-    port_raw = (data.get("dstport") or data.get("destination.port")
-                or data.get("srcport") or data.get("source.port")
+    port_raw = (data.get("dstport") or dest_ns.get("port") or source_ns.get("port")
+                or data.get("srcport")
                 or data.get("suricata.eve.dest_port"))
     dst_port = None
     if isinstance(port_raw, str) and port_raw.isdigit():
