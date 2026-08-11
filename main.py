@@ -479,7 +479,7 @@ def main():
                    help="Tampilkan semua event per insiden (Level 3)")
     a.add_argument("--incident", type=int,
                    help="Hanya tampilkan insiden dengan ID ini (cek --detail dulu)")
-    a.add_argument("--output", help="Simpan output ke file")
+    a.add_argument("--output", "-o", help="Simpan output ke file (.docx/.txt)")
 
     # --- parse ---
     p = sub.add_parser("parse", help="Hanya parse + normalize, output JSON")

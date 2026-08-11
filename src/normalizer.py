@@ -100,20 +100,36 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     predecoder = raw.get("predecoder", {}) if isinstance(raw.get("predecoder"), dict) else {}
 
     # --- FIELD EXTRACTION ---
-    src_ip = data.get("srcip") or predecoder.get("srcip")
-    dst_ip = agent_ip
+    src_ip = (data.get("srcip") or data.get("source.ip")
+              or predecoder.get("srcip") or predecoder.get("source.ip"))
+    dst_ip = (data.get("dstip") or data.get("destination.ip")
+              or predecoder.get("dstip") or predecoder.get("destination.ip")
+              or agent_ip)
     dst_host = agent_name or predecoder.get("hostname")
-    port_raw = data.get("dstport") or data.get("srcport")
+    # dst_port: try data.dstport, destination.port, source.port, suricata.eve.dest_port
+    port_raw = (data.get("dstport") or data.get("destination.port")
+                or data.get("srcport") or data.get("source.port")
+                or data.get("suricata.eve.dest_port"))
     dst_port = None
     if isinstance(port_raw, str) and port_raw.isdigit():
         dst_port = int(port_raw)
     elif isinstance(port_raw, int):
         dst_port = port_raw
 
-    user = data.get("srcuser") or data.get("dstuser")
+    user = (data.get("srcuser") or data.get("dstuser")
+            or data.get("suricata.eve.user"))
     process = data.get("command") or data.get("cmdline")
-    protocol = data.get("proto")
+    protocol = data.get("proto") or data.get("suricata.eve.proto")
     action = _action_from_wazuh_rule(raw)  # default dari rule
+    # Override action from data.action (FortiGate: pass/deny/close)
+    if data.get("action") and data["action"] in ("pass", "deny", "close", "accept", "drop", "block"):
+        da = data["action"].lower()
+        if da in ("deny", "drop", "block"):
+            action = "connection_blocked"
+        elif da in ("pass", "accept"):
+            action = "connection_allowed"
+        elif da == "close":
+            action = "connection_closed"
     severity = _severity_wazuh(level)
 
     full_log_text = raw.get("full_log", "")

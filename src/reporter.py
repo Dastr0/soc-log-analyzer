@@ -66,8 +66,16 @@ def report(incidents: List[Incident],
         all_events: Semua event (buat statistik total).
         detail: Jika True, tampilkan detail per insiden.
         verbose: Jika True, tampilkan daftar event per insiden.
-        output_file: Path file output (opsional).
+        output_file: Path file output (opsional). Auto-detect format from extension:
+                 .docx → Word document, .txt/.md → teks, default → stdout teks.
     """
+    # Auto-detect format from extension
+    format_docx = output_file and output_file.lower().endswith(".docx")
+
+    if format_docx:
+        _write_docx(incidents, all_events, detail or verbose, verbose, output_file)
+        return
+
     out: TextIO = open(output_file, "w") if output_file else None
 
     try:
@@ -307,3 +315,96 @@ def _write_incident_events(incident: Incident, out: Optional[TextIO] = None) -> 
           f"result:{e.result or '-'}")
 
     p(f"\n  Total: {len(events_sorted)} events untuk insiden #{incident.id}")
+
+
+# ─── DOCX Export ────────────────────────────────────────────────────
+
+def _write_docx(incidents: List[Incident],
+                all_events: List[CommonEvent],
+                detail: bool, verbose: bool,
+                output_file: str) -> None:
+    """Generate report .docx (Word document)."""
+    try:
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        print("[!] python-docx belum terinstall. Install: pip install python-docx")
+        print("[i] Falling back ke text output...")
+        _write_docx_fallback(incidents, all_events, detail, verbose, output_file)
+        return
+
+    doc = Document()
+
+    # Title
+    title = doc.add_heading("SOC Log Analyzer — Executive Summary", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph("")
+
+    # Stats
+    total = len(all_events or [])
+    n_confirmed = sum(1 for i in incidents if i.verdict == "CONFIRMED")
+    n_fp = sum(1 for i in incidents if "FP" in i.verdict)
+
+    doc.add_heading("Overview", level=1)
+    doc.add_paragraph(f"Total events: {total:,}")
+    doc.add_paragraph(f"Incidents: {len(incidents)} "
+                      f"(CONFIRMED: {n_confirmed}, FP: {n_fp})")
+
+    if all_events:
+        t_min = min(e.timestamp for e in all_events)
+        t_max = max(e.timestamp for e in all_events)
+        doc.add_paragraph(f"Time range: {t_min.strftime('%Y-%m-%d %H:%M')} → "
+                          f"{t_max.strftime('%H:%M')}")
+
+    # Per-incident sections
+    for inc in incidents:
+        doc.add_heading(f"Incident #{inc.id}: {inc.pattern} — {inc.verdict} "
+                        f"({inc.confidence:.0f}%)", level=2)
+
+        # Key metrics table
+        table = doc.add_table(rows=5, cols=2, style="Light Grid Accent 1")
+        rows_data = [
+            ("Events", str(inc.event_count)),
+            ("Source IPs", ", ".join(sorted(inc.unique_ips)[:5]) if inc.unique_ips else "—"),
+            ("Users", ", ".join(sorted(inc.unique_users)[:5]) if inc.unique_users else "—"),
+            ("Sources", ", ".join(sorted(inc.sources)) if inc.sources else "—"),
+            ("Pattern", inc.pattern),
+        ]
+        for i, (k, v) in enumerate(rows_data):
+            table.rows[i].cells[0].text = k
+            table.rows[i].cells[1].text = v
+
+        # Reasoning
+        if inc.reasoning and detail:
+            doc.add_heading("FP Reasoning", level=3)
+            for r in inc.reasoning:
+                doc.add_paragraph(r, style="List Bullet")
+
+        # Sample events
+        if verbose:
+            doc.add_heading("Events", level=3)
+            for e in sorted(inc.events, key=lambda x: x.timestamp)[:50]:
+                doc.add_paragraph(
+                    f"{e.timestamp.strftime('%H:%M:%S')} | "
+                    f"{e.action or '?'} | src:{e.src_ip or '?'} → "
+                    f"{e.dst_host or e.dst_ip or '?'}"
+                )
+
+        doc.add_paragraph("")  # spacer
+
+    doc.save(output_file)
+    print(f"[✓] DOCX saved: {output_file}")
+
+
+def _write_docx_fallback(incidents, all_events, detail, verbose, output_file):
+    """Fallback: tulis text report dengan ekstensi .txt kalau python-docx nggak ada."""
+    fallback_path = output_file.rsplit(".", 1)[0] + ".txt"
+    with open(fallback_path, "w") as f:
+        for inc in incidents:
+            f.write(f"Incident #{inc.id}: {inc.pattern} — {inc.verdict} ({inc.confidence:.0f}%)\n")
+            f.write(f"  Events: {inc.event_count}, IPs: {', '.join(sorted(inc.unique_ips)[:5])}\n")
+            f.write("\n")
+    print(f"[✓] Fallback TXT: {fallback_path} (install python-docx for .docx)")
