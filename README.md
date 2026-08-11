@@ -117,7 +117,7 @@ soc-log-analyzer/
 
 ## Keamanan
 
-- Repo ini PRIVATE.
+- Repo ini PUBLIC — kode bisa dilihat siapa saja. Hati-hati dengan yang di-commit.
 - JANGAN commit log asli / IP internal / username / data produksi.
 - Semua secret lewat `.env` — jangan hardcode.
 - Sample data harus di-sanitasi. `data/` di-gitignore.
