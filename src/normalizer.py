@@ -583,7 +583,7 @@ def _to_int(value, default=0):
 
 def _looks_like_uuid(s: str) -> bool:
     """Detect UUID format: 8-4-4-4-12 hex digits with hyphens."""
-    if not s or "-" not in s or len(s) < 20:
+    if not s or "-" not in s or len(s) < 14:
         return False
     parts = s.split("-")
     # UUID v4: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (or shorter variants)
