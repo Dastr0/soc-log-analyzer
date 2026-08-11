@@ -147,6 +147,16 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # --- Report ---
     output_file = args.output if hasattr(args, 'output') and args.output else None
+
+    # Filter per-insiden kalau --incident dipakai
+    if hasattr(args, 'incident') and args.incident:
+        target = [i for i in incidents if i.id == args.incident]
+        if not target:
+            print(f"[!] Insiden #{args.incident} tidak ditemukan. "
+                  f"Insiden yang ada: {', '.join(str(i.id) for i in incidents)}")
+            sys.exit(1)
+        incidents = target
+
     report(incidents, all_events, detail=args.detail, verbose=args.verbose,
            output_file=output_file)
 
@@ -348,6 +358,8 @@ def main():
                    help="Tampilkan detail per insiden (Level 2)")
     a.add_argument("--verbose", action="store_true",
                    help="Tampilkan semua event per insiden (Level 3)")
+    a.add_argument("--incident", type=int,
+                   help="Hanya tampilkan insiden dengan ID ini (cek --detail dulu)")
     a.add_argument("--output", help="Simpan output ke file")
 
     # --- parse ---
