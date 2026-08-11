@@ -170,22 +170,28 @@ def _proto_name(proto_int: Optional[int]) -> Optional[str]:
 
 
 def normalize_fortigate(raw: dict) -> CommonEvent:
-    """Konversi raw FortiGate syslog event → CommonEvent."""
+    """Konversi raw FortiGate syslog event → CommonEvent.
+    Support native syslog parser (dg _timestamp, _dstport_int, dll)
+    maupun CSV parser (dg timestamp, dstport string, dll).
+    """
 
-    # Timestamp dari date + time
-    ts_str = raw.get("_timestamp") or f"{raw.get('date', '')}T{raw.get('time', '')}"
+    # Timestamp: coba _timestamp (native parser) → timestamp (CSV) → date+time
+    ts_str = (raw.get("_timestamp")
+              or raw.get("timestamp")
+              or f"{raw.get('date', '')}T{raw.get('time', '')}")
     try:
-        # Format: 2026-08-10T08:33:17
         timestamp = _parse_fortigate_time(ts_str)
     except (ValueError, AttributeError):
         timestamp = datetime.now(timezone.utc)
 
-    # Fields
+    # Fields: _*_int (native parser) dengan fallback ke string (CSV)
     src_ip = raw.get("srcip")
     dst_ip = raw.get("dstip")
-    dst_port = raw.get("_dstport_int")
+    dst_port = (_safe_int(raw.get("_dstport_int"))
+                or _safe_int(raw.get("dstport")))
     src_host = raw.get("devname")
-    proto_int = raw.get("_proto_int")
+    proto_int = (_safe_int(raw.get("_proto_int"))
+                 or _safe_int(raw.get("proto")))
 
     action = raw.get("action", "").lower()
     log_type = raw.get("type", "")
@@ -216,8 +222,12 @@ def normalize_fortigate(raw: dict) -> CommonEvent:
         severity = 2  # outbound external — could be exfil
 
     # Extra info
-    sent_bytes = raw.get("_sentbyte_int")
-    rcvd_bytes = raw.get("_rcvdbyte_int")
+    sent_bytes = (_safe_int(raw.get("_sentbyte_int"))
+                  or _safe_int(raw.get("sentbyte")))
+    rcvd_bytes = (_safe_int(raw.get("_rcvdbyte_int"))
+                  or _safe_int(raw.get("rcvdbyte")))
+    duration = (_safe_int(raw.get("_duration_int"))
+                or _safe_int(raw.get("duration")))
 
     return CommonEvent(
         timestamp=timestamp,
@@ -241,7 +251,7 @@ def normalize_fortigate(raw: dict) -> CommonEvent:
             "policy_id": raw.get("policyid", ""),
             "sent_bytes": sent_bytes,
             "rcvd_bytes": rcvd_bytes,
-            "duration": raw.get("_duration_int"),
+            "duration": duration,
             "log_id": raw.get("logid", ""),
         },
     )
@@ -418,6 +428,16 @@ def _is_ip_internal(ip: str) -> bool:
         if pattern.match(ip):
             return True
     return False
+
+
+def _safe_int(value, default=None):
+    """Safe int conversion — return None kalau gagal."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def _to_int(value, default=0):
