@@ -95,6 +95,8 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
 
     # --- DATA ---
     data = raw.get("data", {}) if isinstance(raw.get("data"), dict) else {}
+    # Strip Elastic null placeholders from data fields
+    data = {k: v for k, v in data.items() if v and str(v).strip() != "-"}
 
     # --- PRE-DECODER ---
     predecoder = raw.get("predecoder", {}) if isinstance(raw.get("predecoder"), dict) else {}
@@ -374,6 +376,8 @@ def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
 
     # Data fields (spesifik Windows, lebih kaya dari Wazuh Linux)
     data = raw.get("data", {}) if isinstance(raw.get("data"), dict) else {}
+    # Strip Elastic null placeholders from data fields
+    data = {k: v for k, v in data.items() if v and str(v).strip() != "-"}
 
     # Windows-specific extraction
     user = (data.get("dstuser") or data.get("srcuser") or
