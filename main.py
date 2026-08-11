@@ -20,6 +20,7 @@ from src.schema import CommonEvent, Incident
 from src.parsers.wazuh import WazuhParser
 from src.parsers.fortigate import FortiGateParser
 from src.parsers.windows import WindowsParser
+from src.parsers.csv_elastic import CsvElasticParser
 from src.normalizer import normalize_wazuh, normalize_fortigate, normalize_windows
 from src.correlation import correlate
 from src.detection import detect
@@ -83,35 +84,70 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         parser_cls = PARSER_MAP.get(source)
         normalizer_fn = NORMALIZER_MAP.get(source)
 
-        if not parser_cls or not normalizer_fn:
-            print(f"[!] Parser untuk source '{source}' belum tersedia.")
-            continue
+        is_csv = filepath.lower().endswith(".csv")
 
-        print(f"\n[⏳] Parsing: {filepath} ({source})")
-        parser = parser_cls(filepath)
+        if is_csv:
+            # ── CSV path: auto-detect source dari kolom ──
+            print(f"\n[⏳] Parsing CSV: {filepath} (auto-detect source...)")
+            csv_parser = CsvElasticParser(filepath, source_hint=source)
+            raw_events = list(csv_parser.parse())
+            detected = csv_parser.detected_source or "unknown"
+            parsed = csv_parser.parsed
+            skipped = csv_parser.skipped
+            total_raw += parsed
+            total_skipped += skipped
 
-        raw_events = list(parser.parse())  # konsumsi generator
-        parsed = parser.parsed
-        skipped = parser.skipped
-        total_raw += parsed
-        total_skipped += skipped
+            print(f"[✓] CSVParsed: {parsed:,} events ({skipped} skipped) "
+                  f"→ detected source: {detected}")
 
-        print(f"[✓] Parsed: {parsed:,} events ({skipped} skipped) "
-              f"dari {Path(filepath).name}")
+            # Pilih normalizer dari source terdeteksi
+            if detected not in NORMALIZER_MAP:
+                print(f"[!] Source terdeteksi '{detected}' belum ada normalizernya. Skip.")
+                continue
 
-        # Normalize
-        print(f"[⏳] Normalizing...")
-        source_events = []
-        for raw in raw_events:
-            try:
-                event = normalizer_fn(raw)
-                source_events.append(event)
-            except Exception as exc:
-                skipped += 1
-                total_skipped += 1
+            normalizer_fn = NORMALIZER_MAP[detected]
+            print(f"[⏳] Normalizing as: {detected}...")
+            source_events = []
+            for raw in raw_events:
+                try:
+                    event = normalizer_fn(raw)
+                    source_events.append(event)
+                except Exception:
+                    total_skipped += 1
 
-        all_events.extend(source_events)
-        print(f"[✓] Normalized: {len(source_events):,} common events")
+            all_events.extend(source_events)
+            print(f"[✓] Normalized: {len(source_events):,} common events")
+
+        else:
+            # ── Native path (JSONL / syslog) ──
+            if not parser_cls or not normalizer_fn:
+                print(f"[!] Parser untuk source '{source}' belum tersedia.")
+                continue
+
+            print(f"\n[⏳] Parsing: {filepath} ({source})")
+            parser = parser_cls(filepath)
+
+            raw_events = list(parser.parse())
+            parsed = parser.parsed
+            skipped = parser.skipped
+            total_raw += parsed
+            total_skipped += skipped
+
+            print(f"[✓] Parsed: {parsed:,} events ({skipped} skipped) "
+                  f"dari {Path(filepath).name}")
+
+            # Normalize
+            print(f"[⏳] Normalizing...")
+            source_events = []
+            for raw in raw_events:
+                try:
+                    event = normalizer_fn(raw)
+                    source_events.append(event)
+                except Exception:
+                    total_skipped += 1
+
+            all_events.extend(source_events)
+            print(f"[✓] Normalized: {len(source_events):,} common events")
 
     if not all_events:
         print("[!] Nggak ada event yang berhasil diparse dari semua file.")

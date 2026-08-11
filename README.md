@@ -45,11 +45,21 @@ python3 main.py analyze -s windows -f data/sample-windows-security.json
 Ganti `data/sample-*.json` dengan file log asli hasil export Elastic.
 Format file yang didukung:
 
-| Source | Format file | Nama file yang dikenali auto-detect |
-|--------|------------|--------------------------------------|
-| wazuh | JSONL (satu JSON per baris) | `*.json` (default), `*wazuh*`, `*alert*` |
-| fortigate | syslog key=value per baris | `*fortigate*`, `*forti*`, `*fw.log*` |
-| windows | JSONL (Wazuh/winlogbeat) | `*windows*`, `*security*`, `*sysmon*` |
+| Source | Format native | CSV (Elastic Discover) |
+|--------|--------------|------------------------|
+| wazuh | JSONL (satu JSON per baris) | ✅ kolom: rule.id, agent.name, data.srcip, ... |
+| fortigate | syslog key=value | ✅ kolom: devname, srcip, dstip, action, ... |
+| windows | JSONL (Wazuh/winlogbeat) | ✅ kolom: rule.id, agent.name, data.srcuser, ... |
+
+CSV export dari menu Discover Elastic langsung bisa dipakai — script
+auto-detect source dari nama kolom CSV. Tinggal:
+```bash
+python3 main.py analyze --dir ~/Downloads/   # auto-detect semua CSV
+```
+Atau kalau namanya ambigu, kasih hint:
+```bash
+python3 main.py analyze -s windows -f export.csv
+```
 
 ### 3. Level output (kedalaman analisa)
 
@@ -192,7 +202,10 @@ soc-log-analyzer/
 │   ├── sample_data.py   # sample Wazuh alert generator
 │   └── parsers/
 │       ├── base.py      # abstract parser interface
-│       └── wazuh.py     # Wazuh alerts.json parser
+│   │   ├── wazuh.py     # Wazuh alerts.json parser
+│   │   ├── fortigate.py # FortiGate syslog parser
+│   │   ├── windows.py   # Windows EventLog parser (Wazuh + generic)
+│   │   └── csv_elastic.py  # CSV Elastic Discover → nested dict
 ├── config/
 │   ├── .env.example
 │   ├── trusted_hosts.yaml
