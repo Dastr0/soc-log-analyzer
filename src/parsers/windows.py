@@ -21,7 +21,7 @@ from src.parsers.base import BaseParser
 
 
 # ─── Windows EventID → Action mapping ─────────────────────────────
-_EVENTID_ACTION_MAP = {
+EVENTID_ACTION_MAP = {
     # Logon
     "4624": "login_success",
     "4625": "login_failed",
@@ -68,10 +68,10 @@ _EVENTID_ACTION_MAP = {
 }
 
 # Wazuh rule.id → EventID mapping (Windows agent)
-_WAZUH_RULE_EVENTID = {
+WAZUH_RULE_EVENTID = {
     # Windows logon
-    "60106": "4625",   # Windows logon failure
-    "60122": "4624",   # Windows logon success
+    "60106": "4624",   # Windows logon success
+    "60122": "4625",   # Windows logon failure
     "60204": "4720",   # Windows: A user account was created
     "60207": "4726",   # Windows: A user account was deleted
     "60202": "4732",   # Windows: User added to local group
@@ -99,7 +99,7 @@ class WindowsParser(BaseParser):
       - JSON dengan winlog.event_id → mode generic Elastic
     """
 
-    EVENTID_ACTION = _EVENTID_ACTION_MAP
+    EVENTID_ACTION = EVENTID_ACTION_MAP
 
     def __init__(self, filepath: str):
         super().__init__(filepath)
@@ -107,7 +107,7 @@ class WindowsParser(BaseParser):
         self._mode: Optional[str] = None  # "wazuh" or "generic"
 
     def parse(self) -> Iterator[dict]:
-        """Baca file, auto-detect format per baris pertama."""
+        """Baca file dan auto-detect format untuk setiap event."""
         self.total_lines = self._count_lines()
         processed = 0
 
@@ -128,14 +128,18 @@ class WindowsParser(BaseParser):
                     self.skipped += 1
                     continue
 
-                # Auto-detect mode dari event pertama
-                if self._mode is None:
-                    self._mode = self._detect_mode(event)
+                # Elastic bulk/search exports commonly wrap the document.
+                if isinstance(event.get("_source"), dict):
+                    event = event["_source"]
 
-                if self._is_valid(event):
+                mode = self._detect_mode(event)
+                if self._mode is None:
+                    self._mode = mode
+
+                if self._is_valid(event, mode):
                     self.parsed += 1
                     # Inject source marker buat normalizer
-                    event["_parser_mode"] = self._mode
+                    event["_parser_mode"] = mode
                     yield event
                 else:
                     self.skipped += 1
@@ -164,9 +168,10 @@ class WindowsParser(BaseParser):
             return "generic"
         return "generic"
 
-    def _is_valid(self, event: dict) -> bool:
+    def _is_valid(self, event: dict, mode: Optional[str] = None) -> bool:
         """Minimal: harus punya timestamp & bisa diekstrak field-nya."""
-        if self._mode == "wazuh":
+        mode = mode or self._mode
+        if mode == "wazuh":
             return "timestamp" in event and "rule" in event
         # Generic mode: cukup punya @timestamp atau timestamp
         return "@timestamp" in event or "timestamp" in event
@@ -178,16 +183,36 @@ class WindowsParser(BaseParser):
         mode = event.get("_parser_mode") or self._mode
 
         if mode == "wazuh":
-            # Coba dari Wazuh rule.id → EventID mapping
+            # Prefer the original Windows Event ID carried by Wazuh.
+            data = event.get("data", {})
+            if isinstance(data, dict):
+                win = data.get("win", {})
+                if isinstance(win, dict):
+                    system = win.get("system", {})
+                    if isinstance(system, dict):
+                        event_id = system.get("eventID") or system.get("eventId")
+                        if event_id not in (None, ""):
+                            return str(event_id)
+
+                for key in ("win.system.eventID", "win.system.eventId",
+                            "event_id", "EventID", "id"):
+                    if data.get(key) not in (None, ""):
+                        return str(data[key])
+
+            # Fallback from Wazuh rule.id only when the event ID is absent.
             rule = event.get("rule", {})
             if isinstance(rule, dict):
                 wazuh_id = str(rule.get("id", ""))
-                return _WAZUH_RULE_EVENTID.get(wazuh_id, wazuh_id)
+                return WAZUH_RULE_EVENTID.get(wazuh_id, wazuh_id)
 
         # Generic: winlog.event_id atau event_id langsung
         winlog = event.get("winlog", {})
         if isinstance(winlog, dict) and "event_id" in winlog:
             return str(winlog["event_id"])
+
+        event_ns = event.get("event", {})
+        if isinstance(event_ns, dict) and event_ns.get("code") not in (None, ""):
+            return str(event_ns["code"])
 
         for key in ("event_id", "EventID", "event.code"):
             if key in event:
@@ -198,8 +223,8 @@ class WindowsParser(BaseParser):
     def extract_action(self, event: dict) -> Optional[str]:
         """Map EventID → common action label."""
         eid = self.extract_event_id(event)
-        if eid and eid in _EVENTID_ACTION_MAP:
-            return _EVENTID_ACTION_MAP[eid]
+        if eid and eid in EVENTID_ACTION_MAP:
+            return EVENTID_ACTION_MAP[eid]
 
         # Fallback: cek rule.description untuk keyword Windows
         mode = event.get("_parser_mode") or self._mode

@@ -45,6 +45,46 @@ NORMALIZER_MAP = {
 SUPPORTED_SOURCES = sorted(PARSER_MAP.keys())
 
 
+def _normalize_records(raw_events, normalizer_fn, source_label: str):
+    """Normalize records while surfacing bounded, actionable errors."""
+    events = []
+    errors = 0
+    for index, raw in enumerate(raw_events, start=1):
+        try:
+            events.append(normalizer_fn(raw))
+        except Exception as exc:
+            errors += 1
+            if errors <= 5:
+                sys.stderr.write(
+                    f"[!] Normalize error ({source_label}, record {index}): "
+                    f"{type(exc).__name__}: {exc}\n"
+                )
+    if errors > 5:
+        sys.stderr.write(f"[!] {errors - 5} additional normalization errors omitted.\n")
+    return events, errors
+
+
+def _event_to_dict(event: CommonEvent) -> dict:
+    """Serialize the complete normalized contract used by later correlation."""
+    return {
+        "timestamp": event.timestamp.isoformat(),
+        "source": event.source,
+        "src_host": event.src_host,
+        "src_ip": event.src_ip,
+        "dst_ip": event.dst_ip,
+        "dst_host": event.dst_host,
+        "dst_port": event.dst_port,
+        "user": event.user,
+        "process": event.process,
+        "action": event.action,
+        "result": event.result,
+        "protocol": event.protocol,
+        "severity": event.severity,
+        "extra": event.extra,
+        "raw_event": event.raw_event,
+    }
+
+
 # ─── Main Commands ─────────────────────────────────────────────────
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -53,7 +93,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # --- Collect file:source pairs ---
     pairs: List[Tuple[str, str]] = []
-    if args.file and args.source:
+    explicit_source = bool(args.file and args.source)
+    if explicit_source:
         pairs.append((args.source, args.file))
     elif args.dir:
         dir_path = Path(args.dir)
@@ -89,7 +130,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         if is_csv:
             # ── CSV path: auto-detect source dari kolom ──
             print(f"\n[⏳] Parsing CSV: {filepath} (auto-detect source...)")
-            csv_parser = CsvElasticParser(filepath, source_hint=source)
+            csv_parser = CsvElasticParser(
+                filepath,
+                source_hint=source,
+                source_hint_authoritative=explicit_source,
+            )
             raw_events = list(csv_parser.parse())
             detected = csv_parser.detected_source or "unknown"
             parsed = csv_parser.parsed
@@ -107,13 +152,10 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
             normalizer_fn = NORMALIZER_MAP[detected]
             print(f"[⏳] Normalizing as: {detected}...")
-            source_events = []
-            for raw in raw_events:
-                try:
-                    event = normalizer_fn(raw)
-                    source_events.append(event)
-                except Exception:
-                    total_skipped += 1
+            source_events, normalize_errors = _normalize_records(
+                raw_events, normalizer_fn, detected
+            )
+            total_skipped += normalize_errors
 
             all_events.extend(source_events)
             print(f"[✓] Normalized: {len(source_events):,} common events")
@@ -138,13 +180,10 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
             # Normalize
             print(f"[⏳] Normalizing...")
-            source_events = []
-            for raw in raw_events:
-                try:
-                    event = normalizer_fn(raw)
-                    source_events.append(event)
-                except Exception:
-                    total_skipped += 1
+            source_events, normalize_errors = _normalize_records(
+                raw_events, normalizer_fn, source
+            )
+            total_skipped += normalize_errors
 
             all_events.extend(source_events)
             print(f"[✓] Normalized: {len(source_events):,} common events")
@@ -211,7 +250,11 @@ def cmd_parse(args: argparse.Namespace) -> None:
     if is_csv:
         # CSV → auto-detect source → normalize
         sys.stderr.write(f"[⏳] Parsing CSV: {args.file} (auto-detect)...\n")
-        csv_parser = CsvElasticParser(args.file, source_hint=args.source)
+        csv_parser = CsvElasticParser(
+            args.file,
+            source_hint=args.source,
+            source_hint_authoritative=True,
+        )
         raw_events = list(csv_parser.parse())
         detected = csv_parser.detected_source or "unknown"
         sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events → {detected}\n")
@@ -237,27 +280,24 @@ def cmd_parse(args: argparse.Namespace) -> None:
         sys.stderr.write(f"[✓] Parsed: {len(raw_events)} events\n")
 
     sys.stderr.write(f"[⏳] Normalizing...\n")
-    events = []
-    for raw in raw_events:
-        try:
-            event = normalizer_fn(raw)
-            events.append({
-                "timestamp": event.timestamp.isoformat(),
-                "source": event.source,
-                "src_ip": event.src_ip,
-                "dst_ip": event.dst_ip,
-                "dst_host": event.dst_host,
-                "dst_port": event.dst_port,
-                "user": event.user,
-                "action": event.action,
-                "severity": event.severity,
-            })
-        except Exception:
-            pass
+    normalized, normalize_errors = _normalize_records(
+        raw_events, normalizer_fn, detected if is_csv else args.source
+    )
+    events = [_event_to_dict(event) for event in normalized]
 
-    output = json.dumps(events, indent=2)
+    if raw_events and not events:
+        sys.stderr.write(
+            f"[!] All {len(raw_events)} parsed records failed normalization.\n"
+        )
+        sys.exit(1)
+    if normalize_errors:
+        sys.stderr.write(
+            f"[!] Normalized {len(events)} records; {normalize_errors} failed.\n"
+        )
+
+    output = json.dumps(events, indent=2, ensure_ascii=False)
     if args.output:
-        Path(args.output).write_text(output)
+        Path(args.output).write_text(output, encoding="utf-8")
         sys.stderr.write(f"[✓] Output saved: {args.output}\n")
     else:
         print(output)
@@ -464,6 +504,14 @@ def _load_trusted_config() -> dict:
 # ─── CLI Setup ──────────────────────────────────────────────────────
 
 def main():
+    # Windows terminals may default to cp1252 and reject progress symbols.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
+
     parser = argparse.ArgumentParser(
         prog="soc-log-analyzer",
         description="Analisa log multi-source untuk SOC (Elastic + Wazuh).",

@@ -12,6 +12,7 @@ Custom mapping: tambahin kolom CSV lu sendiri di config/csv_mappings.yaml.
 """
 
 import csv
+import json
 import sys
 from pathlib import Path
 from typing import Iterator, Optional
@@ -34,26 +35,28 @@ class CsvElasticParser(BaseParser):
     _yaml_cache: Optional[dict] = None
     _yaml_loaded: bool = False
 
-    def __init__(self, filepath: str, source_hint: Optional[str] = None):
+    def __init__(self, filepath: str, source_hint: Optional[str] = None,
+                 source_hint_authoritative: bool = False):
         super().__init__(filepath)
         self.source_hint = source_hint
+        self.source_hint_authoritative = source_hint_authoritative
         self._detected_source: Optional[str] = None
 
     def parse(self) -> Iterator[dict]:
         """Baca CSV, konversi tiap baris jadi nested dict."""
         self.total_lines = self._count_lines()
 
-        with open(self.filepath, "r", encoding="utf-8", errors="replace") as f:
+        with open(self.filepath, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
                 return
 
             # Deteksi source
-            self._detected_source = (
-                self._detect_source(reader.fieldnames)
-                or self.source_hint
-                or "unknown"
-            )
+            detected = self._detect_source(reader.fieldnames)
+            if self.source_hint_authoritative:
+                self._detected_source = self.source_hint or detected or "unknown"
+            else:
+                self._detected_source = detected or self.source_hint or "unknown"
             self.source_type = self._detected_source
 
             processed = 0
@@ -91,11 +94,19 @@ class CsvElasticParser(BaseParser):
         """Deteksi source type dari nama-nama kolom CSV."""
         fields = set(f.lower() for f in fieldnames)
 
-        if {"rule.id", "agent.name"} & fields or {"rule_id", "agent_name"} & fields:
-            return "wazuh"
+        # Windows/Winlogbeat: use its distinctive namespaces before generic ECS
+        # fields such as agent.name, which are shared by many Elastic sources.
+        if (any(f.startswith("winlog.") for f in fields)
+                or "event.code" in fields
+                or any(f.startswith("data.win.") for f in fields)):
+            return "windows"
+        if {"event_id", "eventid", "winlog_event_id"} & fields:
+            return "windows"
 
-        # FortiGate: devname/device_name/hostname + traffic fields
-        if {"devname", "device_name", "hostname", "sourceip", "destip"} & fields:
+        # FortiGate: require a device/log marker plus network traffic fields.
+        traffic_fields = {"srcip", "sourceip", "source_ip", "dstip", "destip", "dest_ip"}
+        device_fields = {"devname", "device_name", "logid", "policyid", "subtype"}
+        if fields & traffic_fields and fields & device_fields:
             return "fortigate"
         if "type" in fields and "srcip" in fields:
             return "fortigate"
@@ -103,14 +114,9 @@ class CsvElasticParser(BaseParser):
             if not {"rule.id", "agent.name", "event_id"} & fields:
                 return "fortigate"
 
-        if {"winlog.event_id", "event_id", "event.code"} & fields:
-            return "windows"
-
-        if "dstuser" in fields and "srcip" in fields:
-            if any("security" in f.lower() or "windows" in f.lower() for f in fieldnames):
-                return "windows"
-
-        if "rule.level" in fields or "rule_id" in fields:
+        if (("rule.id" in fields or "rule_id" in fields)
+                and ({"rule.level", "rule_level", "rule.description",
+                      "agent.name", "agent_name", "manager.name"} & fields)):
             return "wazuh"
 
         return "unknown"
@@ -141,7 +147,7 @@ class CsvElasticParser(BaseParser):
                     target[part] = {"_value": target[part]}
                 target = target[part]
 
-            target[parts[-1]] = value
+            target[parts[-1]] = _coerce_csv_value(value)
 
         return result if has_content else None
 
@@ -155,7 +161,9 @@ class CsvElasticParser(BaseParser):
             return cls._yaml_cache or {}
 
         cls._yaml_loaded = True
+        project_config = Path(__file__).resolve().parents[2] / "config" / "csv_mappings.yaml"
         paths = [
+            project_config,
             Path("config/csv_mappings.yaml"),
             Path.home() / ".hermes" / "soc-log-analyzer" / "csv_mappings.yaml",
         ]
@@ -197,7 +205,7 @@ class CsvElasticParser(BaseParser):
             "agent_id": "agent.id", "agent_name": "agent.name", "agent_ip": "agent.ip",
             "data_srcip": "data.srcip", "src_ip": "data.srcip",
             "data_srcport": "data.srcport", "srcport": "data.srcport",
-            "data_srcuser": "data.dstuser", "data_dstuser": "data.dstuser",
+            "data_srcuser": "data.srcuser", "data_dstuser": "data.dstuser",
             "data_dstip": "data.dstip", "dst_ip": "data.dstip",
             "data_dstport": "data.dstport", "dstport": "data.dstport",
             "data_proto": "data.proto", "data_command": "data.command",
@@ -208,9 +216,10 @@ class CsvElasticParser(BaseParser):
             "policyid": "policyid", "sentbyte": "sentbyte", "rcvdbyte": "rcvdbyte",
             "winlog_event_id": "winlog.event_id", "event_code": "winlog.event_id",
             "event_id": "event_id", "host_name": "host.name", "host_ip": "host.ip",
-            "target_user_name": "event_data.TargetUserName",
-            "targetusername": "event_data.TargetUserName",
-            "ip_address": "event_data.IpAddress", "ipaddress": "event_data.IpAddress",
+            "target_user_name": "winlog.event_data.TargetUserName",
+            "targetusername": "winlog.event_data.TargetUserName",
+            "ip_address": "winlog.event_data.IpAddress",
+            "ipaddress": "winlog.event_data.IpAddress",
             "computer_name": "computer_name", "message": "full_log",
         }
         if key_lower in builtin:
@@ -231,3 +240,13 @@ def _deep_lowercase_keys(obj):
     if isinstance(obj, dict):
         return {k.lower(): _deep_lowercase_keys(v) for k, v in obj.items()}
     return obj
+
+
+def _coerce_csv_value(value: str):
+    """Restore JSON arrays/objects exported by Elastic without changing IDs."""
+    if value and value[0] in "[{" and value[-1] in "]}":
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return value

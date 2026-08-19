@@ -4,10 +4,46 @@ Normalizer: konversi raw event per-source → CommonEvent universal.
 Mapping field-by-field dari setiap source ke CommonEvent schema.
 """
 
+import ipaddress
 from datetime import datetime, timezone
 from typing import Optional
 
 from src.schema import CommonEvent
+from src.parsers.windows import EVENTID_ACTION_MAP, WindowsParser
+
+
+def _parse_iso_timestamp(value: object, field_name: str = "timestamp") -> datetime:
+    """Parse an ISO-8601 timestamp and fail explicitly when it is invalid."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"missing {field_name}")
+
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    # Wazuh commonly emits offsets as +0000 instead of +00:00.
+    if len(text) >= 5 and text[-5] in "+-" and text[-3] != ":":
+        text = text[:-2] + ":" + text[-2:]
+
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid {field_name}: {value!r}") from exc
+
+    # Preserve the historical UTC assumption only when the source has no zone.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_scalar(value: object):
+    """ECS fields such as host.ip may be arrays; select the first value."""
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
 
 
 # Severity normalization table: Wazuh rule.level → CommonEvent severity
@@ -35,6 +71,10 @@ def _action_from_wazuh_rule(event: dict) -> Optional[str]:
     # Fallback ke generic
     groups = event.get("rule", {}).get("groups", [])
     if isinstance(groups, list):
+        # Specific outcome groups must win over generic groups like "windows".
+        for specific in ("authentication_failed", "authentication_success"):
+            if specific in groups:
+                return _GROUP_ACTION_MAP[specific]
         for g in groups:
             if g in _GROUP_ACTION_MAP:
                 return _GROUP_ACTION_MAP[g]
@@ -49,8 +89,10 @@ _ACTION_PATTERNS = [
     ("failed password", "login_failed"),
     ("authentication failure", "login_failed"),
     ("multiple authentication failure", "login_failed"),
+    ("logon failure", "login_failed"),
     ("authentication success", "login_success"),
     ("successful login", "login_success"),
+    ("logon success", "login_success"),
     ("new user", "user_created"),
     ("user deleted", "user_deleted"),
     ("user added to group", "user_added_to_group"),
@@ -75,13 +117,9 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     """Konversi raw Wazuh alert → CommonEvent."""
 
     # --- TIMESTAMP ---
-    ts_str = raw.get("timestamp", "")
-    try:
-        # Format ISO 8601 dengan timezone (+0000)
-        ts_str = ts_str.replace("+0000", "+00:00")
-        timestamp = datetime.fromisoformat(ts_str)
-    except (ValueError, AttributeError):
-        timestamp = datetime.now(timezone.utc)
+    timestamp = _parse_iso_timestamp(
+        raw.get("timestamp") or raw.get("@timestamp"), "Wazuh timestamp"
+    )
 
     # --- RULE ---
     rule = raw.get("rule", {})
@@ -104,14 +142,22 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
     # --- FIELD EXTRACTION ---
     source_ns = raw.get("source", {}) if isinstance(raw.get("source"), dict) else {}
     dest_ns = raw.get("destination", {}) if isinstance(raw.get("destination"), dict) else {}
+    win = _as_dict(data.get("win"))
+    win_system = _as_dict(win.get("system"))
+    win_eventdata = _as_dict(win.get("eventdata"))
     src_ip = (data.get("srcip") or data.get("ip")
+              or win_eventdata.get("ipAddress")
+              or win_eventdata.get("sourceNetworkAddress")
               or source_ns.get("ip")
               or predecoder.get("srcip") or predecoder.get("source.ip"))
     dst_ip = (data.get("dstip") or dest_ns.get("ip")
               or predecoder.get("dstip") or predecoder.get("destination.ip")
               or agent_ip)
-    dst_host = agent_name or predecoder.get("hostname")
+    src_ip = _first_scalar(src_ip)
+    dst_ip = _first_scalar(dst_ip)
+    dst_host = agent_name or win_system.get("computer") or predecoder.get("hostname")
     port_raw = (data.get("dstport") or dest_ns.get("port") or source_ns.get("port")
+                or win_eventdata.get("destinationPort")
                 or data.get("srcport")
                 or data.get("suricata.eve.dest_port"))
     dst_port = None
@@ -121,9 +167,15 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
         dst_port = port_raw
 
     user = (data.get("srcuser") or data.get("dstuser")
+            or win_eventdata.get("targetUserName")
+            or win_eventdata.get("subjectUserName")
             or data.get("suricata.eve.user"))
-    process = data.get("command") or data.get("cmdline")
-    protocol = data.get("proto") or data.get("suricata.eve.proto")
+    process = (data.get("command") or data.get("cmdline")
+               or win_eventdata.get("commandLine")
+               or win_eventdata.get("newProcessName")
+               or win_eventdata.get("processName"))
+    protocol = (data.get("proto") or win_eventdata.get("protocol")
+                or data.get("suricata.eve.proto"))
     action = _action_from_wazuh_rule(raw)  # default dari rule
     # Override action from data.action (FortiGate: pass/deny/close)
     if data.get("action") and data["action"] in ("pass", "deny", "close", "accept", "drop", "block"):
@@ -219,6 +271,9 @@ def normalize_wazuh(raw: dict) -> CommonEvent:
             "rule_groups": rule.get("groups", []) if isinstance(rule, dict) else [],
             "mitre": mitre,
             "location": raw.get("location", ""),
+            "event_id": (win_system.get("eventID") or win_system.get("eventId")
+                         or data.get("id") or ""),
+            "logon_type": win_eventdata.get("logonType", ""),
             "full_log": raw.get("full_log", ""),
             "agent_id": agent.get("id", ""),
             "manager": raw.get("manager", {}).get("name", ""),
@@ -246,14 +301,8 @@ def normalize_fortigate(raw: dict) -> CommonEvent:
     maupun CSV parser (dg timestamp, dstport string, dll).
     """
 
-    # Timestamp: coba _timestamp (native parser) → timestamp (CSV) → date+time
-    ts_str = (raw.get("_timestamp")
-              or raw.get("timestamp")
-              or f"{raw.get('date', '')}T{raw.get('time', '')}")
-    try:
-        timestamp = _parse_fortigate_time(ts_str)
-    except (ValueError, AttributeError):
-        timestamp = datetime.now(timezone.utc)
+    # eventtime is authoritative; date/time + tz is the fallback.
+    timestamp = _parse_fortigate_time(raw)
 
     # Fields: _*_int (native parser) dengan fallback ke string (CSV)
     src_ip = raw.get("srcip")
@@ -269,7 +318,7 @@ def normalize_fortigate(raw: dict) -> CommonEvent:
     subtype = raw.get("subtype", "")
 
     # Map action → common label
-    if action == "accept":
+    if action in ("accept", "pass", "start"):
         common_action = "connection_allowed"
         result = "allowed"
     elif action in ("deny", "drop", "block"):
@@ -328,16 +377,45 @@ def normalize_fortigate(raw: dict) -> CommonEvent:
     )
 
 
-def _parse_fortigate_time(ts: str) -> datetime:
-    """Parse timestamp FortiGate: 2026-08-10T08:33:17."""
-    from datetime import datetime as dt
-    # Coba ISO lengkap dulu
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+def _parse_fortigate_time(raw: dict) -> datetime:
+    """Parse FortiGate eventtime or local date/time with its tz offset."""
+    eventtime = raw.get("eventtime")
+    if eventtime not in (None, ""):
         try:
-            return dt.strptime(ts, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return dt.now(timezone.utc)
+            epoch = int(str(eventtime).strip())
+            magnitude = abs(epoch)
+            if magnitude >= 10**17:      # nanoseconds
+                seconds = epoch / 1_000_000_000
+            elif magnitude >= 10**14:    # microseconds
+                seconds = epoch / 1_000_000
+            elif magnitude >= 10**11:    # milliseconds
+                seconds = epoch / 1_000
+            else:                        # seconds
+                seconds = epoch
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (ValueError, TypeError, OSError, OverflowError):
+            # Some exports contain a damaged eventtime but a valid date/time.
+            pass
+
+    explicit = raw.get("timestamp")
+    if explicit:
+        return _parse_iso_timestamp(explicit, "FortiGate timestamp")
+
+    date_value = raw.get("date")
+    time_value = raw.get("time")
+    if not date_value or not time_value:
+        raise ValueError("missing FortiGate eventtime and date/time")
+
+    zone = str(raw.get("tz") or "").strip()
+    if zone and zone not in ("Z", "UTC"):
+        if len(zone) == 5 and zone[0] in "+-" and zone[1:].isdigit():
+            zone = zone[:3] + ":" + zone[3:]
+    elif zone in ("Z", "UTC"):
+        zone = "+00:00"
+
+    return _parse_iso_timestamp(
+        f"{date_value}T{time_value}{zone}", "FortiGate date/time"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -358,13 +436,9 @@ def normalize_windows(raw: dict) -> CommonEvent:
 def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
     """Windows event dari Wazuh JSONL (format mirip alerts.json)."""
 
-    # Timestamp
-    ts_str = raw.get("timestamp", "")
-    try:
-        ts_str = ts_str.replace("+0000", "+00:00")
-        timestamp = datetime.fromisoformat(ts_str)
-    except (ValueError, AttributeError):
-        timestamp = datetime.now(timezone.utc)
+    timestamp = _parse_iso_timestamp(
+        raw.get("timestamp") or raw.get("@timestamp"), "Windows/Wazuh timestamp"
+    )
 
     # Rule
     rule = raw.get("rule", {}) if isinstance(raw.get("rule"), dict) else {}
@@ -379,21 +453,33 @@ def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
     data = raw.get("data", {}) if isinstance(raw.get("data"), dict) else {}
     # Strip Elastic null placeholders from data fields
     data = {k: v for k, v in data.items() if v and str(v).strip() != "-"}
+    win = _as_dict(data.get("win"))
+    win_system = _as_dict(win.get("system"))
+    win_eventdata = _as_dict(win.get("eventdata"))
 
     # Windows-specific extraction
     user = (data.get("dstuser") or data.get("srcuser") or
-            data.get("TargetUserName") or data.get("target_user"))
+            data.get("TargetUserName") or data.get("target_user") or
+            win_eventdata.get("targetUserName") or
+            win_eventdata.get("subjectUserName"))
     src_ip = (data.get("srcip") or data.get("SourceIp") or
-              data.get("IpAddress") or data.get("source_ip"))
+              data.get("IpAddress") or data.get("source_ip") or
+              win_eventdata.get("ipAddress") or
+              win_eventdata.get("sourceNetworkAddress"))
     process = (data.get("command") or data.get("CommandLine") or
-               data.get("cmd") or data.get("process"))
-    dst_port = data.get("dstport") or data.get("DestPort") or data.get("dest_port")
-    if isinstance(dst_port, str) and dst_port.isdigit():
-        dst_port = int(dst_port)
+               data.get("cmd") or data.get("process") or
+               win_eventdata.get("commandLine") or
+               win_eventdata.get("newProcessName") or
+               win_eventdata.get("processName"))
+    dst_port = _safe_int(
+        data.get("dstport") or data.get("DestPort") or data.get("dest_port") or
+        win_eventdata.get("destinationPort")
+    )
+    src_ip = _first_scalar(src_ip)
 
     # Event ID → action
-    from src.parsers.windows import WindowsParser
     wp = WindowsParser.__new__(WindowsParser)
+    wp._mode = "wazuh"
     event_id = wp.extract_event_id(raw)
     action = wp.extract_action(raw)
 
@@ -405,20 +491,24 @@ def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
     return CommonEvent(
         timestamp=timestamp,
         source="windows",
-        src_host=None,
+        src_host=win_eventdata.get("workstationName"),
         src_ip=src_ip,
         dst_ip=agent_ip,          # agent.ip = host yang dimonitor
-        dst_host=agent_name,
+        dst_host=agent_name or win_system.get("computer"),
         dst_port=dst_port,
         user=user,
         process=process,
         action=action,
         result=result,
-        protocol=None,
+        protocol=win_eventdata.get("protocol"),
         severity=severity,
         raw_event=raw,
         extra={
             "event_id": event_id,
+            "logon_type": (win_eventdata.get("logonType") or
+                           data.get("logon_type") or data.get("LogonType") or ""),
+            "status": win_eventdata.get("status", ""),
+            "sub_status": win_eventdata.get("subStatus", ""),
             "rule_id": rule.get("id", "") if isinstance(rule, dict) else "",
             "rule_description": rule.get("description", "") if isinstance(rule, dict) else "",
             "location": raw.get("location", ""),
@@ -431,39 +521,51 @@ def _normalize_windows_wazuh(raw: dict) -> CommonEvent:
 def _normalize_windows_generic(raw: dict) -> CommonEvent:
     """Windows event dari format generic Elastic/winlogbeat."""
 
-    # Timestamp
-    ts_str = raw.get("@timestamp") or raw.get("timestamp", "")
-    try:
-        timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        timestamp = datetime.now(timezone.utc)
+    timestamp = _parse_iso_timestamp(
+        raw.get("@timestamp") or raw.get("timestamp"), "Winlogbeat timestamp"
+    )
 
     # Winlog fields
     winlog = raw.get("winlog", {})
     if not isinstance(winlog, dict):
         winlog = {}
 
-    event_id = str(winlog.get("event_id") or raw.get("event_id", ""))
-    action = _EVENTID_ACTION_MAP.get(event_id, "windows_event")
+    event_ns = _as_dict(raw.get("event"))
+    event_id_raw = (winlog.get("event_id") or event_ns.get("code") or
+                    raw.get("event_id") or raw.get("EventID") or
+                    raw.get("event.code"))
+    event_id = str(event_id_raw) if event_id_raw not in (None, "") else ""
+    action = EVENTID_ACTION_MAP.get(event_id, "windows_event")
 
     # Host
-    host = raw.get("host", {}).get("name") or raw.get("computer_name", "")
-    agent_ip = raw.get("host", {}).get("ip") or raw.get("agent", {}).get("ip", "")
+    host_ns = _as_dict(raw.get("host"))
+    agent_ns = _as_dict(raw.get("agent"))
+    host = (winlog.get("computer_name") or host_ns.get("name") or
+            raw.get("computer_name", ""))
+    agent_ip = _first_scalar(host_ns.get("ip") or agent_ns.get("ip"))
 
     # Event data
-    event_data = raw.get("event_data", {})
-    if not isinstance(event_data, dict):
-        event_data = raw.get("EventData", {}) if isinstance(raw.get("EventData"), dict) else {}
+    event_data = _as_dict(winlog.get("event_data"))
+    if not event_data:
+        event_data = _as_dict(raw.get("event_data")) or _as_dict(raw.get("EventData"))
 
     user = (event_data.get("TargetUserName") or
-            raw.get("user", {}).get("name") or
+            event_data.get("targetUserName") or
+            _as_dict(raw.get("user")).get("name") or
             raw.get("user_name"))
 
     src_ip = (event_data.get("IpAddress") or
-              event_data.get("SourceNetworkAddress"))
-    process = (event_data.get("NewProcessName") or
-               event_data.get("CommandLine") or
+              event_data.get("ipAddress") or
+              event_data.get("SourceNetworkAddress") or
+              _as_dict(raw.get("source")).get("ip"))
+    src_ip = _first_scalar(src_ip)
+    process = (event_data.get("CommandLine") or
+               event_data.get("commandLine") or
+               event_data.get("NewProcessName") or
                event_data.get("ProcessName"))
+    dst_port = _safe_int(event_data.get("DestinationPort") or
+                         event_data.get("DestPort"))
+    protocol = event_data.get("Protocol") or event_data.get("protocol")
 
     result = "failure" if action == "login_failed" else (
         "success" if action == "login_success" else None)
@@ -471,13 +573,17 @@ def _normalize_windows_generic(raw: dict) -> CommonEvent:
     return CommonEvent(
         timestamp=timestamp,
         source="windows",
+        src_host=(event_data.get("WorkstationName") or
+                  event_data.get("workstationName")),
         src_ip=src_ip,
         dst_host=host,
         dst_ip=agent_ip,
+        dst_port=dst_port,
         user=user,
         process=process,
         action=action,
         result=result,
+        protocol=protocol,
         severity=2,  # default MEDIUM
         raw_event=raw,
         extra={
@@ -486,21 +592,21 @@ def _normalize_windows_generic(raw: dict) -> CommonEvent:
             "provider": winlog.get("provider_name", ""),
             "keywords": winlog.get("keywords", ""),
             "task": winlog.get("task", ""),
+            "logon_type": (event_data.get("LogonType") or
+                           event_data.get("logonType") or ""),
+            "status": event_data.get("Status", ""),
+            "sub_status": event_data.get("SubStatus", ""),
         },
     )
 
 
 def _is_ip_internal(ip: str) -> bool:
-    """Check RFC1918."""
-    import re
-    for pattern in [
-        re.compile(r"^10\..*"),
-        re.compile(r"^172\.(1[6-9]|2\d|3[01])\..*"),
-        re.compile(r"^192\.168\..*"),
-    ]:
-        if pattern.match(ip):
-            return True
-    return False
+    """Check private, loopback, or link-local IPv4/IPv6 addresses."""
+    try:
+        parsed = ipaddress.ip_address(str(ip).split("%", 1)[0])
+        return parsed.is_private or parsed.is_loopback or parsed.is_link_local
+    except ValueError:
+        return False
 
 
 def _safe_int(value, default=None):
@@ -594,8 +700,11 @@ def _looks_like_uuid(s: str) -> bool:
 
 
 def _looks_like_ip(s: str) -> bool:
-    """Cek apakah string berbentuk IP address (hanya digit + dots, 4 oktet)."""
-    if not s or "." not in s:
+    """Validate IPv4 or IPv6 without accepting arbitrary dotted strings."""
+    if not isinstance(s, str) or not s.strip():
         return False
-    parts = s.split(".")
-    return len(parts) == 4 and all(p.isdigit() for p in parts)
+    try:
+        ipaddress.ip_address(s.strip().split("%", 1)[0])
+        return True
+    except ValueError:
+        return False

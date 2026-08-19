@@ -51,6 +51,10 @@ Format file yang didukung:
 | fortigate | syslog key=value | ✅ kolom: devname, srcip, dstip, action, ... |
 | windows | JSONL (Wazuh/winlogbeat) | ✅ kolom: rule.id, agent.name, data.srcuser, ... |
 
+Catatan Windows: input native saat ini adalah JSONL hasil Wazuh EventChannel,
+Winlogbeat/ECS, atau CSV Elastic Discover. File mentah `.evtx` belum dibaca
+langsung; export dulu ke salah satu format tersebut.
+
 CSV export dari menu Discover Elastic langsung bisa dipakai — script
 auto-detect source dari nama kolom CSV. Tinggal:
 ```bash
@@ -104,6 +108,17 @@ confirmation di FP detection.
 python3 main.py parse -s wazuh -f file.json
 python3 main.py parse -s fortigate -f fw.log --output parsed.json
 python3 main.py parse -s windows -f security.json --output parsed.json
+```
+
+Output `parse` menyertakan seluruh kontrak normalized (`src_host`, `src_ip`,
+`dst_*`, `user`, `process`, `action`, `result`, `protocol`, `severity`, `extra`)
+serta `raw_event` untuk audit/troubleshooting. Record dengan timestamp rusak
+atau gagal dinormalisasi dilaporkan ke stderr dan tidak diberi timestamp palsu.
+
+### Parser regression tests
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
 
 ### 6. Konfigurasi

@@ -43,7 +43,7 @@ class WazuhParser(BaseParser):
         self.total_lines = self._count_lines()
         processed = 0
 
-        with open(self.filepath, "r", encoding="utf-8") as f:
+        with open(self.filepath, "r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 processed += 1
                 line = line.strip()
@@ -52,6 +52,8 @@ class WazuhParser(BaseParser):
 
                 try:
                     event = json.loads(line)
+                    if isinstance(event, dict) and isinstance(event.get("_source"), dict):
+                        event = event["_source"]
                     # pastiin ini alert Wazuh valid (minimal punya timestamp & rule)
                     if self._is_valid_alert(event):
                         self.parsed += 1
